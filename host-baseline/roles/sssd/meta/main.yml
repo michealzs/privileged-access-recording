@@ -7,6 +7,8 @@ galaxy_info:
   license: MIT
   min_ansible_version: "2.15"
   platforms:
+    # EL8 needs python39 installed and ansible_python_interpreter pointed at it,
+    # because its system Python 3.6 is below what ansible-core 2.17 targets.
     - name: EL
       versions:
         - "8"

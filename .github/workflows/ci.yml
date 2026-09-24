@@ -102,7 +102,12 @@ jobs:
       matrix:
         distro:
           - rockylinux9
-          - rockylinux8
+          # rockylinux8 is deliberately absent. Its system interpreter is
+          # Python 3.6, and ansible-core 2.17 emits modules carrying
+          # "from __future__ import annotations", which needs 3.7 or newer on
+          # the target. Fact gathering dies with "future feature annotations is
+          # not defined" before a role runs. See the Known limitations section
+          # in README.md for what running against EL8 would take.
     steps:
       - name: Check out the repository
         uses: actions/checkout@v4

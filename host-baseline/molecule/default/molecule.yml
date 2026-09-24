@@ -1,5 +1,11 @@
 ---
-# Run with MOLECULE_DISTRO=rockylinux9|rockylinux8 (default rockylinux9).
+# Run with MOLECULE_DISTRO=rockylinux9 (the default).
+#
+# rockylinux8 does not work with the pinned ansible-core. EL8 ships Python 3.6
+# as /usr/bin/python3, and ansible-core 2.17 modules use
+# "from __future__ import annotations", which 3.6 cannot parse, so fact
+# gathering fails before any role runs. Running against EL8 means installing
+# python39 on the target and pointing ansible_python_interpreter at it.
 #
 # What this scenario can and cannot prove is worth being explicit about, because
 # two of the four roles configure things a container does not have:

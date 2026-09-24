@@ -188,6 +188,11 @@ The ones that decide whether any of this is doing something, in the order they m
 - **No reverse proxy and no TLS termination for Guacamole.** The web app is published on loopback. The public name, the certificate and any IP allow list belong to something in front of it.
 - **No SIEM deployment.** The workspace holds the host's record and the queries are written to be read and run. Turning them into analytics rules is a separate decision with a separate bill.
 - **No group lifecycle.** `identity/` can create the two access groups, and it does not manage their membership, because joiners and leavers belong with the identity process rather than with policy.
+- **EL8 is not in CI.** Rocky 8 ships Python 3.6 as `/usr/bin/python3`, and the pinned
+  `ansible-core` 2.17 emits modules using `from __future__ import annotations`, which
+  3.6 cannot parse, so fact gathering fails before a role runs. The roles themselves
+  are EL8 compatible. Running them there means installing `python39` on the target and
+  setting `ansible_python_interpreter=/usr/bin/python3.9`. Molecule covers Rocky 9 only.
 - **No Debian or Ubuntu support in the host baseline.** Every package task is `ansible.builtin.dnf`, and the `tlog` and `authselect` paths are RHEL specific. That is a port, not a variable.
 - **No backup of the recordings.** Both gateway volumes are local. A recording that exists only on the gateway is not evidence against somebody with root on the gateway, which is the argument the whole two recorder design rests on.
 
