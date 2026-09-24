@@ -1,0 +1,47 @@
+// Somebody changed who can log in, or what they can do once they have.
+//
+// Two auditd keys, read together because the question is the same one: did the
+// access on this host stop matching the access the directory granted. The
+// identity key covers writes to passwd, group, shadow, gshadow and opasswd. The
+// sudoers key covers /etc/sudoers and /etc/sudoers.d/.
+//
+// On a directory joined host both should be close to silent. Accounts come from
+// the directory, and sudo comes from the drop-in that host-baseline/roles/sssd
+// writes. A write to either is therefore either configuration management doing
+// its job, or somebody giving themselves access the directory did not.
+//
+// Distinguishing those two is what the Actor column is for: a change made by
+// the configuration management account is expected, and a change made by a
+// person who then used it is the finding.
+let window = 7d;
+// The account configuration management runs as. Its changes are expected; it is
+// listed rather than filtered out so that the row is still visible.
+let automationAccounts = dynamic(["example-svc-ansible"]);
+// The programs the audit trail arrives as. audisp-syslog is the current ident and
+// audispd is the older one, and this is the same predicate every auditd query in
+// this directory uses: keying off the program rather than the syslog facility
+// means a host configured with the upstream default facility is still matched.
+let auditPrograms = dynamic(["audispd", "audisp-syslog"]);
+Syslog
+| where TimeGenerated > ago(window)
+| where ProcessName in (auditPrograms)
+| extend AuditKey = extract(@'key=\"?([a-zA-Z0-9_-]+)\"?', 1, SyslogMessage)
+| where AuditKey in ("identity", "sudoers")
+| extend
+    LoginName = extract(@'\bAUID="([^"]+)"', 1, SyslogMessage),
+    LoginUid = extract(@'\bauid=([0-9]+)\b', 1, SyslogMessage),
+    TargetPath = extract(@'\bname=\"?([^\s"]+)\"?', 1, SyslogMessage),
+    Executable = extract(@'\bexe=\"?([^\s"]+)\"?', 1, SyslogMessage)
+// A package upgrade touching these files arrives with no login uid. Those are
+// real events and they are not somebody making a decision.
+| where LoginUid != "" and LoginUid != "4294967295"
+| extend Expected = LoginName in (automationAccounts)
+| project
+    TimeGenerated,
+    Computer,
+    AuditKey,
+    LoginName,
+    Expected,
+    TargetPath,
+    Executable
+| order by Expected asc, TimeGenerated desc

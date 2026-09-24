@@ -1,0 +1,47 @@
+---
+# The host half of recorded privileged access.
+#
+# Order is not arbitrary:
+#   sssd            first, because every other role names directory groups and
+#                   they have to resolve.
+#   auditd          second, because it is what stores the TTY captures and what
+#                   records a change to the recording configuration. A host that
+#                   gets tlog before auditd has a window where the recording can
+#                   be reconfigured unobserved.
+#   tlog            third. Session recording, keyed off the directory groups
+#                   sssd now resolves.
+#   pam_tty_audit   last. It depends on auditd running, and it is the role most
+#                   likely to need backing out, so it is the last thing applied
+#                   and the first thing to remove.
+#
+#   ansible-playbook site.yml --check --diff            # dry run first, always
+#   ansible-playbook site.yml --tags recording
+#   ansible-playbook site.yml -e baseline_serial=1
+#
+# serial and max_fail_percentage together mean a bad change stops at the first
+# batch instead of reaching the whole fleet. On hosts reached only through a
+# gateway, a change that breaks PAM breaks the way in, so this is not optional.
+
+- name: Apply the recorded access host baseline
+  hosts: recorded_hosts
+  become: true
+  serial: "{{ baseline_serial | default('25%') }}"
+  max_fail_percentage: 0
+  roles:
+    - role: sssd
+      tags:
+        - sssd
+        - identity
+    - role: auditd
+      tags:
+        - auditd
+        - audit
+    - role: tlog
+      tags:
+        - tlog
+        - recording
+    - role: pam_tty_audit
+      tags:
+        - pam_tty_audit
+        - recording
+        - keystrokes

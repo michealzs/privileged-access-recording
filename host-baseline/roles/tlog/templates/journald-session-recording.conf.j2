@@ -1,0 +1,21 @@
+# {{ ansible_managed }}
+#
+# tlog writes a recorded session to the journal as a stream of messages. With
+# journald's default rate limit in place, a session that produces output faster
+# than the limit loses messages, the recording has a hole in the middle, and
+# nothing reports an error. That is worse than no recording, so the limit is
+# removed here rather than raised.
+
+[Journal]
+RateLimitIntervalSec={{ tlog_journald_rate_limit_interval_sec }}
+RateLimitBurst={{ tlog_journald_rate_limit_burst }}
+
+# The journal is the local buffer until rsyslog has forwarded a session. Sized
+# for a collector outage, not for a day of logs.
+SystemMaxUse={{ tlog_journald_system_max_use }}
+Storage=persistent
+Compress=yes
+
+# Recordings are the contents of privileged terminals. Nothing on this host
+# needs to read them except root and the forwarder.
+ForwardToWall=no

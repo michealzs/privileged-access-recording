@@ -1,0 +1,23 @@
+---
+# ansible-lint configuration. The production profile is the strictest built-in
+# profile and is what CI enforces.
+
+profile: production
+
+exclude_paths:
+  - .venv/
+  - .collections/
+  - .facts_cache/
+  - .cache/
+  - molecule/*/.molecule/
+
+# Nothing is skipped. If a rule ever needs to be skipped, add it here with a
+# comment explaining why, and prefer a task-level "noqa" with a reason instead.
+skip_list: []
+
+warn_list:
+  - experimental
+
+# Run without network access. Collections are installed by "make deps" or by the
+# CI workflow before ansible-lint runs, so nothing needs to be fetched.
+offline: true

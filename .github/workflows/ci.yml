@@ -1,0 +1,171 @@
+---
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PY_COLORS: "1"
+  ANSIBLE_FORCE_COLOR: "1"
+
+jobs:
+  lint:
+    name: yamllint, shellcheck and actionlint
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install yamllint
+        run: pip install "yamllint==1.35.1"
+
+      - name: Run yamllint
+        run: python -m yamllint -c .yamllint.yaml --strict .
+
+      - name: Run shellcheck
+        run: shellcheck gateways/guacamole/prune-recordings.sh
+
+      - name: Run actionlint
+        uses: raven-actions/actionlint@v2
+
+      - name: Check the README context tokens against context.env.example
+        run: make context-check
+
+      - name: Refuse em dashes and en dashes
+        run: |
+          if grep -rInP '\xe2\x80\x94|\xe2\x80\x93' . --exclude-dir=.git; then
+            echo "em dash or en dash found, use a plain hyphen"
+            exit 1
+          fi
+
+  ansible:
+    name: ansible-lint and syntax check
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: host-baseline
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: host-baseline/requirements.txt
+
+      - name: Install control node dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install Galaxy collections
+        run: >-
+          ansible-galaxy collection install -r requirements.yml
+          -p "${{ github.workspace }}/host-baseline/.collections"
+
+      - name: Run ansible-lint
+        run: ansible-lint --offline
+        env:
+          ANSIBLE_COLLECTIONS_PATH: ${{ github.workspace }}/host-baseline/.collections
+
+      - name: Syntax check the playbook
+        run: ansible-playbook -i inventory/example/hosts.yml site.yml --syntax-check
+        env:
+          ANSIBLE_COLLECTIONS_PATH: ${{ github.workspace }}/host-baseline/.collections
+
+  molecule:
+    name: molecule (${{ matrix.distro }})
+    runs-on: ubuntu-24.04
+    needs:
+      - lint
+      - ansible
+    defaults:
+      run:
+        working-directory: host-baseline
+    strategy:
+      fail-fast: false
+      matrix:
+        distro:
+          - rockylinux9
+          - rockylinux8
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: host-baseline/requirements.txt
+
+      - name: Install control node dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install Galaxy collections
+        run: >-
+          ansible-galaxy collection install -r requirements.yml
+          -p "${{ github.workspace }}/host-baseline/.collections"
+
+      - name: Run the molecule scenario
+        run: molecule test
+        env:
+          MOLECULE_DISTRO: ${{ matrix.distro }}
+          ANSIBLE_COLLECTIONS_PATH: ${{ github.workspace }}/host-baseline/.collections
+
+  terraform:
+    name: terraform (${{ matrix.directory }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        directory:
+          - identity
+          - pipeline
+    defaults:
+      run:
+        working-directory: ${{ matrix.directory }}
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+          terraform_wrapper: false
+
+      - name: Check terraform.tfvars.example against variables.tf
+        run: make -C "${{ github.workspace }}" tfvars-check TF_DIRS=${{ matrix.directory }}
+
+      - name: Check formatting
+        run: terraform fmt -recursive -check -diff
+
+      - name: Initialise without a backend
+        run: terraform init -backend=false -input=false
+
+      - name: Validate
+        run: terraform validate
+
+      - name: Set up tflint
+        uses: terraform-linters/setup-tflint@v4
+        with:
+          tflint_version: v0.53.0
+
+      - name: Run tflint
+        run: tflint --recursive

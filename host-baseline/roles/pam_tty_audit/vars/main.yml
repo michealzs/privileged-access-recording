@@ -1,0 +1,16 @@
+---
+# Assembled once here rather than in the template of every task, so the
+# arguments in every PAM file are identical and a diff of one file is a diff of
+# all of them.
+#
+# Order matters: disable is evaluated before enable, so "disable=*" first and
+# the enable patterns second means off by default and on for those accounts.
+pam_tty_audit_arguments: >-
+  {{
+    (
+      (['disable=' ~ (pam_tty_audit_disable_patterns | join(','))] if pam_tty_audit_disable_patterns | length > 0 else [])
+      + (['enable=' ~ (pam_tty_audit_enable_patterns | join(','))] if pam_tty_audit_enable_patterns | length > 0 else [])
+      + (['log_passwd'] if pam_tty_audit_log_passwd | bool else [])
+      + (['open_only'] if pam_tty_audit_open_only | bool else [])
+    ) | join(' ')
+  }}

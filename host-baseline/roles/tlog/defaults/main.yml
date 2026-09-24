@@ -1,0 +1,128 @@
+---
+tlog_packages:
+  - tlog
+
+# Which directory users get their shell replaced by tlog-rec-session. sssd does
+# the substitution, so this is a directory group list and not a local one.
+#
+#   none  nobody is recorded. Use it to turn recording off without uninstalling.
+#   some  only the users and groups named below are recorded.
+#   all   everybody is recorded except the exclusions.
+tlog_scope: some
+
+# The groups whose sessions are recorded. This is the variable that limits
+# recording, and it should be the privileged groups only: recording every
+# unprivileged login produces volume nobody reads and widens what a stolen
+# recording exposes.
+tlog_record_groups:
+  - example-linux-admins
+
+# Individual users, for the cases a group cannot express. Prefer the group list.
+tlog_record_users: []
+
+# Accounts never recorded even when they match the above. Service accounts that
+# run non-interactive commands over ssh belong here: tlog would record them
+# constantly and a service account has no session for a human to review.
+tlog_exclude_users:
+  - example-svc-backup
+tlog_exclude_groups: []
+
+# The real shell tlog hands the session to once recording has started.
+tlog_shell: /bin/bash
+
+# Shown to the user at the start of every recorded session. Recording people
+# without telling them is a legal problem in most places, and this is the notice.
+tlog_notice: "\nThis session is being recorded.\n\n"
+
+# What is captured. Output and window resizes, not input, is the default and it
+# is deliberate: input capture records passwords typed into a prompt inside the
+# session. See roles/pam_tty_audit/README.md for the same problem stated in full.
+tlog_log_input: false
+tlog_log_output: true
+tlog_log_window: true
+
+# Seconds of session buffered before a write. Higher is fewer, larger log
+# entries and more lost at the end if the host dies mid session.
+tlog_latency: 10
+# Maximum bytes per log message. Above the collector's own limit this produces
+# messages that are silently truncated downstream.
+tlog_payload: 2048
+
+# Rate limiting, in bytes per second, with a burst allowance.
+tlog_limit_rate: 16384
+tlog_limit_burst: 32768
+# What happens when a session exceeds the rate:
+#   pass   no limiting at all, the session writes as fast as it likes
+#   delay  slow the session down to the limit, keeping every byte
+#   drop   keep the session fast and discard the excess
+# delay keeps the evidence complete and makes a runaway session visibly slow,
+# which is the trade this configuration chooses. drop silently loses the exact
+# moment somebody dumped a large file to the terminal.
+tlog_limit_action: delay
+
+# journal or syslog. journal keeps structured fields, which is what the rsyslog
+# forward and the pipeline queries key off.
+tlog_writer: journal
+tlog_journal_priority: info
+tlog_journal_augment: true
+tlog_syslog_facility: authpriv
+tlog_syslog_priority: info
+
+# Forward recorded sessions off the host. A recording that only exists on the
+# host being recorded is not evidence against somebody who has root on it.
+tlog_forward_enabled: true
+
+# Which syslog programs are forwarded. tlog-rec-session is the recording itself.
+# The audisp entries are auditd's events, arriving through the syslog plugin the
+# auditd role switches on: they are forwarded by the same file because a
+# recording and the audit trail of the same session have to leave together, and
+# a second rsyslog file with its own "stop" is how one of them silently does not.
+# The program name for the plugin differs between releases, so both are listed.
+tlog_forward_programs:
+  - tlog-rec-session
+  - audisp-syslog
+  - audispd
+tlog_collector_host: collector.example.com
+tlog_collector_port: 6514
+# tcp or relp. Plain udp is not offered: a dropped datagram is a hole in the
+# recording nobody will notice.
+tlog_collector_protocol: tcp
+# Spool directory for the disk assisted queue, so a collector outage buffers to
+# disk instead of discarding.
+tlog_forward_spool_directory: /var/spool/rsyslog
+tlog_forward_spool_max_size: 1g
+
+# The main rsyslog configuration to manage the imjournal rate limit in. On the
+# RHEL family /etc/rsyslog.conf loads imjournal itself and includes
+# /etc/rsyslog.d/*.conf afterwards, and rsyslog does not re-apply module
+# parameters on a repeat load, so the override has to go where the module is
+# actually loaded.
+tlog_rsyslog_main_config: /etc/rsyslog.conf
+
+# TLS on the forward. Session recordings are the contents of privileged
+# terminals, so they do not cross a network in plain text. Port 6514 is syslog
+# over TLS; with tlog_forward_tls false, use 601 instead and expect questions.
+tlog_forward_tls: true
+tlog_forward_tls_ca_file: /etc/pki/tls/certs/example-collector-ca.pem
+# The name on the collector's certificate, checked against the certificate.
+tlog_forward_tls_permitted_peer: collector.example.com
+
+# journald rate limiting silently discards messages, and tlog writes a lot of
+# them. A recorded session that hits the limit loses the middle of itself and
+# nothing reports an error, so the limit is removed for this host rather than
+# raised. "0" means no rate limiting.
+tlog_configure_journald: true
+tlog_journald_rate_limit_interval_sec: "0"
+tlog_journald_rate_limit_burst: "0"
+# The journal is the local buffer for recordings until rsyslog has forwarded
+# them. Too small and a collector outage costs sessions.
+tlog_journald_system_max_use: 4G
+tlog_journald_drop_in_path: /etc/systemd/journald.conf.d/10-session-recording.conf
+
+tlog_config_path: /etc/tlog/tlog-rec-session.conf
+tlog_sssd_snippet_path: /etc/sssd/conf.d/01-session-recording.conf
+tlog_rsyslog_config_path: /etc/rsyslog.d/40-tlog-remote.conf
+
+# Restart sssd and rsyslog when their configuration changes. False for
+# container testing.
+tlog_manage_services: true

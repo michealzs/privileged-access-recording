@@ -1,0 +1,19 @@
+---
+# auditd cannot be restarted with systemctl on the RHEL family: the unit sets
+# RefuseManualStop, so "systemctl restart auditd" fails. Reload is permitted and
+# runs the unit's ExecReload, which sends SIGHUP and makes auditd reread
+# auditd.conf and its dispatcher plugin configuration.
+- name: Reload the auditd configuration
+  ansible.builtin.systemd_service:
+    name: auditd
+    state: reloaded
+  when: auditd_manage_service | bool
+
+# Rules are a separate step. augenrules concatenates /etc/audit/rules.d in name
+# order and loads the result, which is also what the unit does at start.
+- name: Load the audit rules
+  ansible.builtin.command:
+    cmd: /usr/sbin/augenrules --load
+  register: auditd_augenrules_load
+  changed_when: auditd_augenrules_load.rc == 0
+  when: auditd_manage_service | bool

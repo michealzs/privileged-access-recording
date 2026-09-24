@@ -1,0 +1,92 @@
+// Privileged commands run outside an approved change window.
+//
+// Filters, in order:
+//   1. auditd events from Syslog over the window. The audisp syslog plugin writes
+//      them, so they arrive as text with the key in it, and the key is what the
+//      rules in roles/auditd/templates/privileged-access.rules.j2 set.
+//   2. Only the "privileged" and "sudoers" keys, so this reads the elevation
+//      events and not every command. Change the key list to "execve" to widen it,
+//      and expect a great deal more output.
+//   3. The login uid is pulled out of the message as auid. auid survives su and
+//      sudo, so this attributes the command to whoever logged in and not to the
+//      account they became.
+//   4. Everything inside a recurring window is dropped, then everything inside a
+//      one-off window from the datatable is dropped. The one-off step is a cross
+//      join, so each candidate event carries a row id and the exclusion is
+//      applied as a leftanti against the ids that fell inside a window. Doing it
+//      the other way round, as a filter after the cross join, keeps an event that
+//      is inside one window because it is outside the others.
+//
+// Recurring windows are expressed in UTC. Getting that wrong across a daylight
+// saving change is the single most common reason this query goes quiet for an
+// hour twice a year, so the boundaries are deliberately wide.
+//
+// Known false positives and gaps when this was written:
+//   - A configuration management run writes to /etc/sudoers.d/ and produces
+//      "sudoers" key events every time. It is a real event and usually not a
+//      finding, and excluding the automation account would exclude exactly the
+//      events an attacker using that account would generate. Exclude the window,
+//      not the account.
+//   - An incident is by definition outside a change window. This query finds it,
+//      correctly, and the triage step is to check it against the incident record.
+//   - A host with a wrong clock reports everything outside the window. Check
+//      chrony before raising a finding on a single host.
+//
+// On a workspace where the audit events arrive through a different collector and
+// keep their structure, replace the extract() calls with the typed columns. The
+// window logic below does not change.
+let window = 14d;
+let auditKeys = dynamic(["privileged", "sudoers"]);
+// Recurring change window, in UTC: weekdays 07:00 to 19:00.
+let windowStartHourUtc = 7;
+let windowEndHourUtc = 19;
+let oneOffWindows = datatable(WindowStart: datetime, WindowEnd: datetime, Reference: string)
+[
+    datetime(2026-09-19 22:00:00), datetime(2026-09-20 04:00:00), "example-change-0001",
+    datetime(2026-09-26 22:00:00), datetime(2026-09-27 04:00:00), "example-change-0002",
+];
+// The programs the audit trail arrives as. audisp-syslog is the current ident and
+// audispd is the older one, and this is the same predicate every auditd query in
+// this directory uses: keying off the program rather than the syslog facility
+// means a host configured with the upstream default facility is still matched.
+let auditPrograms = dynamic(["audispd", "audisp-syslog"]);
+let candidates =
+    Syslog
+    | where TimeGenerated > ago(window)
+    | where ProcessName in (auditPrograms)
+    | where SyslogMessage has "type=SYSCALL" or SyslogMessage has "audit("
+    | extend AuditKey = extract(@'key=\"?([a-z-]+)\"?', 1, SyslogMessage)
+    | where AuditKey in (auditKeys)
+    | extend
+        LoginUid = extract(@"\bauid=(\d+)", 1, SyslogMessage),
+        LoginName = extract(@"\bAUID=\"?([A-Za-z0-9._@-]+)\"?", 1, SyslogMessage),
+        Executable = extract(@"\bexe=\"?([^\" ]+)\"?", 1, SyslogMessage)
+    | extend DayOfWeek = dayofweek(TimeGenerated), HourOfDay = hourofday(TimeGenerated)
+    // Inside the recurring weekday window: not a finding.
+    | where not(
+        DayOfWeek between (1d .. 5d)
+        and HourOfDay >= windowStartHourUtc
+        and HourOfDay < windowEndHourUtc
+      )
+    | serialize EventId = row_number();
+// The events that fall inside a one-off window. Both sides carry a constant
+// joinKey, which is how a cross join is written in this language, and the result
+// is reduced to the ids so the exclusion below cannot duplicate an event.
+let excusedByOneOffWindow =
+    candidates
+    | extend joinKey = 1
+    | join kind=inner (
+        oneOffWindows
+        | extend joinKey = 1
+      ) on joinKey
+    | where TimeGenerated between (WindowStart .. WindowEnd)
+    | distinct EventId;
+candidates
+| join kind=leftanti (excusedByOneOffWindow) on EventId
+| summarize
+    Events = count(),
+    Executables = make_set(Executable, 10),
+    FirstSeen = min(TimeGenerated),
+    LastSeen = max(TimeGenerated)
+    by Computer, AuditKey, LoginUid, LoginName
+| order by Events desc

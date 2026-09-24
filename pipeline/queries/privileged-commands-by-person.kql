@@ -1,0 +1,48 @@
+// Every command run by a real person on a recorded host, attributed to the
+// directory identity rather than to the account the command ran as.
+//
+// This is the query that answers "what did they actually do", and it reads the
+// auditd execve rule from host-baseline/roles/auditd. That rule is the loudest
+// one in the set, so this query is written to be run over a named window and a
+// named person, not over everything.
+//
+// Why auid and not uid: auid is the login uid and it is fixed at login. sudo and
+// su change uid and leave auid alone, so a command run as root through sudo is
+// still attributed to the person who logged in. A query written on uid says
+// "root" for every interesting event.
+let window = 24h;
+// Set this to one directory username to read one person's session. Leave it
+// empty for every person, and expect volume.
+let person = "";
+// The programs the audit trail arrives as. audisp-syslog is the current ident and
+// audispd is the older one, and this is the same predicate every auditd query in
+// this directory uses: keying off the program rather than the syslog facility
+// means a host configured with the upstream default facility is still matched.
+let auditPrograms = dynamic(["audispd", "audisp-syslog"]);
+Syslog
+| where TimeGenerated > ago(window)
+| where ProcessName in (auditPrograms)
+| extend AuditKey = extract(@'key=\"?([a-zA-Z0-9_-]+)\"?', 1, SyslogMessage)
+| where AuditKey in ("execve", "privileged")
+| extend
+    LoginName = extract(@'\bAUID="([^"]+)"', 1, SyslogMessage),
+    RunAsName = extract(@'\bUID="([^"]+)"', 1, SyslogMessage),
+    Executable = extract(@'\bexe=\"?([^\s"]+)\"?', 1, SyslogMessage),
+    WorkingDir = extract(@'\bcwd=\"?([^\s"]+)\"?', 1, SyslogMessage),
+    Terminal = extract(@'\btty=([^\s]+)', 1, SyslogMessage)
+| where LoginName != "" and LoginName != "unset"
+| where person == "" or LoginName == person
+// The elevation is the interesting part: a command whose login identity and
+// running identity differ went through sudo or su.
+| extend Elevated = RunAsName != "" and RunAsName != LoginName
+| project
+    TimeGenerated,
+    Computer,
+    LoginName,
+    RunAsName,
+    Elevated,
+    AuditKey,
+    Executable,
+    WorkingDir,
+    Terminal
+| order by TimeGenerated asc

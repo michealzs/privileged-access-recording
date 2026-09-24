@@ -1,0 +1,45 @@
+// Recorded sessions by user, this week.
+//
+// Filters, in order:
+//   1. Syslog over the last seven days, which is the table the data collection
+//      rule in dcr.tf writes into.
+//   2. ProcessName == "tlog-rec-session", which is the only process that writes
+//      session recordings. Everything else in the table is dropped here.
+//   3. The message is parsed as JSON. tlog writes each fragment of a session as a
+//      JSON document carrying the user, the terminal, a session number and a
+//      position, so the identity and the session boundaries come out of the
+//      message body and not out of a syslog field.
+//   4. Grouped by host, user and session, so one row is one session and the
+//      fragment count becomes a rough measure of how much happened in it.
+//
+// Known false positives and gaps when this was written:
+//   - A session still in progress appears with its last fragment as the end time,
+//      so the duration on the newest row is an understatement.
+//   - Short sessions with no output produce a single fragment and a zero second
+//      duration. That is a login that did nothing, not a failed recording.
+//   - A user who logged in and was not recorded does not appear at all. That is
+//      what recording-failed-to-start.kql is for, and the two queries should be
+//      read together.
+//
+// On a workspace where the agent writes into a custom table rather than Syslog,
+// replace the table name and keep everything below it: the parsing is of the
+// message body, which does not change.
+let window = 7d;
+Syslog
+| where TimeGenerated > ago(window)
+| where ProcessName == "tlog-rec-session"
+| extend rec = parse_json(SyslogMessage)
+| extend
+    RecordedUser = tostring(rec.user),
+    SessionId = tostring(rec.session),
+    Terminal = tostring(rec.term)
+| where isnotempty(RecordedUser)
+| summarize
+    SessionStart = min(TimeGenerated),
+    SessionEnd = max(TimeGenerated),
+    Fragments = count(),
+    Terminals = make_set(Terminal, 5)
+    by Computer, RecordedUser, SessionId
+| extend DurationMinutes = round(datetime_diff('second', SessionEnd, SessionStart) / 60.0, 1)
+| project Computer, RecordedUser, SessionId, SessionStart, SessionEnd, DurationMinutes, Fragments, Terminals
+| order by SessionStart desc

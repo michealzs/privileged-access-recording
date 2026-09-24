@@ -1,0 +1,70 @@
+# {{ ansible_managed }}
+#
+# Forwards recorded sessions and audit events off the host. A recording that
+# exists only on the host being recorded is not evidence against somebody who has
+# root on it, and neither is an audit log.
+#
+# One file handles both, because a session recording and the audit trail of the
+# same session have to leave together. Two files, each ending in "stop", is how
+# one of them silently does not.
+
+# The rsyslog work directory is deliberately not set from this file. It is
+# included after the main configuration, and overriding the work directory here
+# moves imjournal's state file with it, which loses the journal cursor. The disk
+# assisted queue below names its own spool directory instead.
+{% if tlog_forward_tls | bool %}
+
+# TLS for the forward. Requires rsyslog-gnutls, installed by this role.
+global(
+  defaultNetstreamDriver="gtls"
+  defaultNetstreamDriverCAFile="{{ tlog_forward_tls_ca_file }}"
+)
+{% endif %}
+
+{% if tlog_load_imjournal | bool %}
+# imjournal is not loaded by the main configuration on this host, so it is loaded
+# here with its rate limiting off. Left at the default, rsyslog drops recorded
+# session messages before they reach the forward and the only sign of it is a
+# "some messages suppressed" line.
+#
+# When the main configuration does load it, this block is not rendered and the
+# rate limit override is applied to that load instead, by the "Disable imjournal
+# rate limiting" task in this role. A second module(load="imjournal") would be a
+# repeat load of an input module, and rsyslog does not re-apply module parameters
+# on a repeat load, so the override would never reach the running input.
+module(
+  load="imjournal"
+  StateFile="imjournal.state"
+  Ratelimit.Interval="0"
+  Ratelimit.Burst="0"
+)
+{% endif %}
+
+if ($programname == {{ tlog_forward_programs | map('to_json') | join(' or $programname == ') }}) then {
+  action(
+    type="omfwd"
+    target="{{ tlog_collector_host }}"
+    port="{{ tlog_collector_port }}"
+    protocol="{{ tlog_collector_protocol }}"
+    template="RSYSLOG_SyslogProtocol23Format"
+{% if tlog_forward_tls | bool %}
+    StreamDriver="gtls"
+    StreamDriverMode="1"
+    StreamDriverAuthMode="x509/name"
+    StreamDriverPermittedPeers="{{ tlog_forward_tls_permitted_peer }}"
+{% endif %}
+    queue.type="linkedList"
+    queue.filename="tlog_forward"
+    queue.spoolDirectory="{{ tlog_forward_spool_directory }}"
+    queue.maxDiskSpace="{{ tlog_forward_spool_max_size }}"
+    queue.saveOnShutdown="on"
+    queue.dequeueBatchSize="1024"
+    action.resumeRetryCount="-1"
+  )
+  # These are already in the journal and are forwarded from there. Writing them
+  # into /var/log/messages as well fills the disk with a second copy nobody
+  # reads. Note what "stop" means for file ordering: anything in a file that
+  # sorts after this one never sees these messages, which is why the Azure
+  # Monitor Agent's own file is numbered 10 and this one is numbered 40.
+  stop
+}

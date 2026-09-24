@@ -1,0 +1,64 @@
+# Copy to terraform.tfvars and replace every value. The all-zero GUIDs are
+# examples, not real objects, and every key here is declared in variables.tf.
+# "make tfvars-check" is what keeps that true.
+
+tenant_id    = "00000000-0000-0000-0000-000000000000"
+group_prefix = "example-linux"
+
+# Create the two access groups here, or consume object ids for groups the
+# directory already has. False means the object ids below have to be real.
+create_access_groups = false
+
+# Client ids of the gateway application registrations. These are the same ids
+# that appear in gateways/guacamole/.env.example as OIDC_CLIENT_ID and in
+# gateways/warpgate/warpgate.yaml as client_id.
+gateway_application_ids = ["00000000-0000-0000-0000-000000000000"]
+
+# Required, and the one value that prevents a tenant-wide lockout. It is the
+# object id of the group holding the break glass accounts, and every policy
+# created here excludes it. An empty exclusion group is the same as no
+# exclusion, silently, so the group has to actually contain the accounts. Read
+# break-glass.md before setting this, and again before deciding nobody needs it.
+break_glass_group_object_id = "00000000-0000-0000-0000-000000000000"
+
+# Who the administrative policy applies to. Ignored when create_access_groups is
+# true. With both of these empty the policy applies to nobody and the plan fails
+# on a precondition rather than deploying something that does nothing.
+administrative_group_object_ids = ["00000000-0000-0000-0000-000000000000"]
+protected_role_template_ids     = ["00000000-0000-0000-0000-000000000000"]
+
+# Start in report only. The policy logs what it would have done and blocks
+# nothing, which is also why docs/threat-model.md marks the two Conditional
+# Access entries as conditional on this being "enabled". Read the sign-in logs
+# for the accounts that would have been blocked, then change it.
+policy_state = "enabledForReportingButNotEnforced"
+
+# The docs assume this is true. It requires device compliance to already be
+# managed: turning it on without that locks everybody out, and turning it off
+# leaves multifactor as the only control and lets an administrative session
+# start from an unmanaged machine.
+require_compliant_device = true
+
+# Hours between directory reauthentications on a gateway session. Longer than an
+# activation and a token outlives the privilege it was issued for.
+sign_in_frequency_hours = 4
+
+# The role-assignable group whose membership PIM makes time bound. Ignored when
+# create_access_groups is true. Left empty, the provider rejects it as a
+# malformed GUID rather than saying which variable is unset.
+gateway_access_group_object_id = "00000000-0000-0000-0000-000000000000"
+
+# Who may activate into it. Eligible is not active: a member has to activate
+# before they can reach a gateway.
+eligible_principal_object_ids = ["00000000-0000-0000-0000-000000000000"]
+
+# Time bound elevation. require_activation_approval with an empty approver list
+# is refused at plan time, because Entra would fall back to the group owners and
+# let the requester approve themselves.
+require_activation_approval    = true
+activation_approver_object_ids = ["00000000-0000-0000-0000-000000000000"]
+activation_maximum_duration    = "PT8H"
+eligible_assignment_expiration = "P180D"
+
+# An activation nobody is told about is an audit record nobody reads.
+notification_recipient_addresses = ["example-oncall@example.com"]

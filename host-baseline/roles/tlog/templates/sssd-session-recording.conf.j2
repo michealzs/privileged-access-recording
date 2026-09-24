@@ -1,0 +1,28 @@
+# {{ ansible_managed }}
+#
+# sssd replaces the login shell with tlog-rec-session for the users this section
+# selects, and tlog-rec-session then hands the session to the real shell. The
+# user cannot opt out, because the shell they are given is not the one they
+# asked for.
+#
+# scope = {{ tlog_scope }}
+#   none  nobody is recorded
+#   some  only the users and groups below
+#   all   everybody except the exclusions
+
+[session_recording]
+scope = {{ tlog_scope }}
+{% if tlog_record_users | length > 0 %}
+users = {{ tlog_record_users | join(', ') }}
+{% endif %}
+{% if tlog_record_groups | length > 0 %}
+groups = {{ tlog_record_groups | join(', ') }}
+{% endif %}
+{% if tlog_exclude_users | length > 0 %}
+# Service accounts. tlog would record every non-interactive ssh command they
+# run, which is volume with no session for anybody to review.
+exclude_users = {{ tlog_exclude_users | join(', ') }}
+{% endif %}
+{% if tlog_exclude_groups | length > 0 %}
+exclude_groups = {{ tlog_exclude_groups | join(', ') }}
+{% endif %}

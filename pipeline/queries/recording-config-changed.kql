@@ -1,0 +1,55 @@
+// Somebody changed the configuration that decides whether sessions are recorded.
+//
+// This is the query the alert in main.tf deploys, and it is the one event the
+// rest of this repository exists to notice. The auditd rules in
+// host-baseline/roles/auditd watch /etc/tlog/, /etc/sssd/, /etc/pam.d/,
+// /etc/rsyslog.d/ and /etc/systemd/journald.conf.d/ for writes and tag them
+// with the key "recording-config".
+//
+// Schema notes:
+//   Syslog is the table the Azure Monitor Agent writes syslog into. SyslogMessage
+//   holds the whole auditd line as text, because auditd events arrive through
+//   syslog as one string and nothing upstream parses them into columns.
+//   Extracting fields with regular expressions is therefore not laziness here,
+//   it is the only option the shape of the data allows.
+//
+// The ordering problem this cannot solve: an attacker who edits these files and
+// then stops auditd has generated this event, but one who stops auditd first has
+// not. auditd-silent.kql is the query for the second case.
+// The programs the audit trail arrives as. audisp-syslog is the current ident and
+// audispd is the older one, and this is the same predicate every auditd query in
+// this directory uses: keying off the program rather than the syslog facility
+// means a host configured with the upstream default facility is still matched.
+let auditPrograms = dynamic(["audispd", "audisp-syslog"]);
+Syslog
+// No time predicate here on purpose. This query is the criteria of the alert in
+// ../alerts.tf, which scopes it with window_duration, PT30M by default. A narrower
+// ago() in the query would throw away the late arriving events that window exists
+// to catch. Add one only when running it by hand in the Logs blade.
+| where ProcessName in (auditPrograms)
+// key= is written by the auditd rule. The quoted and unquoted forms both occur,
+// depending on whether the key contains characters auditd chooses to escape.
+| where SyslogMessage has "recording-config"
+| extend AuditKey = extract(@'key=\"?([a-zA-Z0-9_-]+)\"?', 1, SyslogMessage)
+| where AuditKey == "recording-config"
+// auid is the login uid. It survives su and sudo, so it names the person who
+// logged in rather than the account they became. uid is who the process ran as.
+| extend
+    LoginUid = extract(@'\bauid=([0-9]+)\b', 1, SyslogMessage),
+    LoginName = extract(@'\bAUID="([^"]+)"', 1, SyslogMessage),
+    RunAsName = extract(@'\bUID="([^"]+)"', 1, SyslogMessage),
+    TargetPath = extract(@'\bname=\"?([^\s"]+)\"?', 1, SyslogMessage),
+    Executable = extract(@'\bexe=\"?([^\s"]+)\"?', 1, SyslogMessage)
+// unset is the auid of a daemon started at boot. A package upgrade rewriting a
+// PAM file arrives that way and is not a person making a change.
+| where LoginUid != "" and LoginUid != "4294967295"
+| project
+    TimeGenerated,
+    Computer,
+    LoginName,
+    RunAsName,
+    LoginUid,
+    TargetPath,
+    Executable,
+    SyslogMessage
+| order by TimeGenerated desc

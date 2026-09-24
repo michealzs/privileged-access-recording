@@ -1,0 +1,20 @@
+---
+galaxy_info:
+  role_name: tlog
+  namespace: michealzs
+  author: Micheal
+  description: Records terminal input and output for named directory groups with tlog, and forwards the recordings to a remote collector.
+  license: MIT
+  min_ansible_version: "2.15"
+  platforms:
+    - name: EL
+      versions:
+        - "8"
+        - "9"
+  galaxy_tags:
+    - tlog
+    - audit
+    - recording
+    - security
+
+dependencies: []

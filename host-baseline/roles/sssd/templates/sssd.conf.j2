@@ -1,0 +1,67 @@
+# {{ ansible_managed }}
+#
+# Identity comes from the directory, which is what makes every recorded session
+# attributable to a person. Login is restricted to the groups in
+# sssd_allowed_groups by the simple access provider, so a directory account
+# with no group membership can authenticate and still not get a session.
+
+[sssd]
+config_file_version = 2
+domains = {{ sssd_domain }}
+services = nss, pam{% if sssd_sudo_groups | length > 0 %}, sudo{% endif %}
+
+
+[nss]
+# Filter the local system accounts out of directory lookups so a directory
+# object called "root" can never resolve to uid 0.
+filter_users = root,bin,daemon,adm,lp,sync,shutdown,halt,mail,operator,games,ftp,nobody
+filter_groups = root,wheel
+memcache_timeout = 300
+
+[pam]
+# How long a cached credential is accepted while the directory is unreachable.
+offline_credentials_expiration = {{ sssd_offline_credentials_expiration }}
+pam_pwd_expiration_warning = 7
+# Log the account that was used even when the authentication fails, so a failed
+# privileged login is attributable too.
+pam_verbosity = 2
+
+{% if sssd_sudo_groups | length > 0 %}
+[sudo]
+# sudo rules come from the local sudoers drop-in, not from the directory. This
+# section only exists so sssd can resolve the group names in it.
+sudo_timed = false
+
+{% endif %}
+[domain/{{ sssd_domain }}]
+id_provider = ad
+auth_provider = ad
+access_provider = simple
+ad_domain = {{ sssd_domain }}
+krb5_realm = {{ sssd_realm }}
+realmd_tags = manages-system joined-with-adcli
+
+# Who may log in. Everything else in this file is plumbing; this is the policy.
+simple_allow_groups = {{ sssd_allowed_groups | join(', ') }}
+
+ldap_id_mapping = {{ sssd_ldap_id_mapping | string | lower }}
+use_fully_qualified_names = {{ sssd_use_fully_qualified_names | string | lower }}
+fallback_homedir = {{ sssd_override_homedir }}
+default_shell = {{ sssd_default_shell }}
+enumerate = {{ sssd_enumerate | string | lower }}
+cache_credentials = {{ sssd_cache_credentials | string | lower }}
+
+# Site discovery through DNS. Hard coding a domain controller here is how a
+# host survives a decommission badly.
+ad_site =
+dyndns_update = true
+dyndns_refresh_interval = 43200
+
+# Do not keep the user's password in the kernel keyring to fetch a ticket with
+# later. false is the default and it is set explicitly because the alternative
+# puts a reusable credential on a recorded host. The option name matters:
+# sssctl config-check rejects anything that is not in sssd's own option list, and
+# the "Deploy sssd.conf" task validates with it, so a misspelling here is a failed
+# task rather than an sssd that will not start after the next reboot.
+krb5_store_password_if_offline = false
+ldap_referrals = false

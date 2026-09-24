@@ -1,0 +1,22 @@
+---
+galaxy_info:
+  role_name: auditd
+  namespace: michealzs
+  author: Micheal
+  description: >-
+    auditd rules for privileged access: execve by real users, identity and sudoers
+    changes, privileged commands, module loading, and the recording configuration.
+  license: MIT
+  min_ansible_version: "2.15"
+  platforms:
+    - name: EL
+      versions:
+        - "8"
+        - "9"
+  galaxy_tags:
+    - auditd
+    - audit
+    - compliance
+    - security
+
+dependencies: []

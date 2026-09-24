@@ -1,0 +1,38 @@
+extends: default
+
+yaml-files:
+  - "*.yaml"
+  - "*.yml"
+  - .yamllint.yaml
+  - .ansible-lint
+
+ignore:
+  - .tmp/
+  - .venv/
+  - host-baseline/.collections/
+  - host-baseline/molecule/*/.molecule/
+
+rules:
+  line-length:
+    max: 160
+    allow-non-breakable-inline-mappings: true
+  # Ansible files here all start with "---". The gateway configuration files do
+  # not, because upstream ships them without it and diffing against upstream is
+  # easier when they match.
+  document-start: disable
+  truthy:
+    # GitHub Actions uses "on:" as a top level key.
+    check-keys: false
+  comments:
+    min-spaces-from-content: 1
+  comments-indentation: false
+  braces:
+    max-spaces-inside: 1
+  brackets:
+    max-spaces-inside: 1
+  octal-values:
+    forbid-implicit-octal: true
+    forbid-explicit-octal: true
+  indentation:
+    spaces: 2
+    indent-sequences: true

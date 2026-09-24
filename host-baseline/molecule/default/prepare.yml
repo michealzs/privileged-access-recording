@@ -1,0 +1,17 @@
+---
+- name: Prepare
+  hosts: all
+  become: true
+  gather_facts: false
+  tasks:
+    # The images ship a minimal package set. These are pulled in by the roles
+    # themselves on a real host, and installing them here keeps a dependency
+    # resolution failure out of the converge step where it would be reported as
+    # a role failure.
+    - name: Install the packages the roles expect to already be resolvable
+      ansible.builtin.dnf:
+        name:
+          - sudo
+          - util-linux
+          - python3
+        state: present

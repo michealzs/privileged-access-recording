@@ -1,0 +1,65 @@
+---
+- name: Install auditd and the dispatcher plugins
+  ansible.builtin.dnf:
+    name: "{{ auditd_packages }}"
+    state: present
+
+- name: Apply the auditd.conf settings
+  ansible.builtin.lineinfile:
+    path: /etc/audit/auditd.conf
+    regexp: '^\s*{{ item.key }}\s*='
+    line: "{{ item.key }} = {{ item.value }}"
+    owner: root
+    group: root
+    mode: "0640"
+  loop: "{{ auditd_conf_settings | dict2items }}"
+  loop_control:
+    label: "{{ item.key }} = {{ item.value }}"
+  notify: Reload the auditd configuration
+
+- name: Deploy the privileged access audit rules
+  ansible.builtin.template:
+    src: privileged-access.rules.j2
+    dest: "{{ auditd_rules_file }}"
+    owner: root
+    group: root
+    mode: "0640"
+    # No validate here on purpose. auditctl is the only thing that parses this
+    # syntax and "auditctl -R" loads the rules rather than checking them, so it
+    # is not a validator and using it as one would apply a half written file.
+    # The molecule scenario loads the rendered file with augenrules instead.
+  notify: Load the audit rules
+
+- name: Send audit events to syslog for forwarding
+  ansible.builtin.lineinfile:
+    path: "{{ auditd_syslog_plugin_path }}"
+    regexp: '^\s*active\s*='
+    line: "active = {{ 'yes' if auditd_forward_to_syslog | bool else 'no' }}"
+    owner: root
+    group: root
+    mode: "0640"
+  notify: Reload the auditd configuration
+
+# The second half of the same decision, and the half that is easy to miss. The
+# shipped file is "args = LOG_INFO": no facility, so the plugin never calls
+# openlog() and every event arrives on the default facility of "user". Managing
+# "active" alone produces a host that forwards its audit trail to a facility
+# nothing collects, which looks from the workspace exactly like a host that is not
+# forwarding at all.
+- name: Write the audit events to the facility the pipeline collects
+  ansible.builtin.lineinfile:
+    path: "{{ auditd_syslog_plugin_path }}"
+    regexp: '^\s*args\s*='
+    line: "args = {{ auditd_syslog_facility }} {{ auditd_syslog_priority }}"
+    owner: root
+    group: root
+    mode: "0640"
+  when: auditd_forward_to_syslog | bool
+  notify: Reload the auditd configuration
+
+- name: Enable and start auditd
+  ansible.builtin.systemd_service:
+    name: auditd
+    enabled: true
+    state: started
+  when: auditd_manage_service | bool

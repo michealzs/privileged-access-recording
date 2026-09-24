@@ -1,0 +1,51 @@
+---
+# pam_tty_audit ships with pam itself. The audit package is what stores and
+# reads the captured data, so it is what this role installs.
+pam_tty_audit_packages:
+  - audit
+
+pam_tty_audit_enabled: true
+
+# Username glob patterns whose TTY input is captured. Note what this is not:
+# pam_tty_audit matches usernames, NOT groups, so "the admins group" cannot be
+# expressed here. Either name the accounts, or rely on a username convention and
+# say so in the access process. See README.md.
+pam_tty_audit_enable_patterns:
+  - root
+  - example.admin
+
+# Patterns explicitly not captured. Evaluated with enable, and listing "*" first
+# means the default is off and only the patterns above are on.
+pam_tty_audit_disable_patterns:
+  - "*"
+
+# Capture passwords typed at a prompt. This is the pam_tty_audit "log_passwd"
+# argument. It is false here and there is a second switch below, because turning
+# it on makes every audit log and every backup of one a password store.
+pam_tty_audit_log_passwd: false
+# Deliberate acknowledgement required before the role will accept log_passwd.
+# Two variables rather than one, so an inherited group_vars file cannot turn
+# password capture on by accident.
+pam_tty_audit_allow_log_passwd: false
+
+# Leave the TTY audit flag set when the session ends rather than restoring the
+# previous value. Useful when a session spawns something that outlives it; it
+# also means a later session on the same terminal inherits the flag.
+pam_tty_audit_open_only: false
+
+# PAM services the module is added to. Files that do not exist on the host are
+# skipped rather than created, because creating a PAM file is how a host stops
+# accepting logins.
+pam_tty_audit_services:
+  - sshd
+  - login
+  - su
+  - sudo
+
+pam_tty_audit_pam_directory: /etc/pam.d
+# The module has to exist before a "required" line referencing it is added to a
+# PAM stack, or every session in that stack fails.
+pam_tty_audit_module_paths:
+  - /usr/lib64/security/pam_tty_audit.so
+  - /lib64/security/pam_tty_audit.so
+  - /usr/lib/x86_64-linux-gnu/security/pam_tty_audit.so

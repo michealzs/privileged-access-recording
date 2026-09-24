@@ -1,0 +1,55 @@
+// A login on a recorded host that did not come through the gateway.
+//
+// This is the correlation the whole two-layer design is for. The gateway records
+// the sessions it brokered. The host records the sessions it actually ran. A row
+// here is a session the host ran and the gateway does not know about, which is
+// either a direct SSH that should not have been possible, a break glass path
+// somebody used without saying so, or a service account doing something
+// interactive.
+//
+// Read the limits before trusting a row:
+//
+//   1. The join is on time and source address, not on a session id. Nothing
+//      carries an identifier across both layers, so this is a heuristic. A
+//      gateway session and a host session that happen within the same window
+//      from the same address are treated as the same session.
+//   2. The gateway's own connection history is not in this workspace. The
+//      gatewayAddresses list below is the substitute: a login from the gateway's
+//      address is assumed brokered. Somebody who can run a shell on the gateway
+//      defeats that assumption, which is why the threat model treats gateway
+//      administrators as inside the trust boundary.
+//   3. Targets are reached by the gateway as svc-gateway, so a brokered session
+//      shows that account and not the person. A login as a named directory user
+//      from the gateway address is unusual and worth reading.
+//
+// Set gatewayAddresses to the addresses the gateway connects out from.
+let window = 24h;
+let gatewayAddresses = dynamic(["10.0.0.10", "10.0.0.11"]);
+// Accounts that legitimately log in without a person behind them. Keep this
+// short: every entry is a session nobody will look at.
+let expectedNonInteractive = dynamic(["example-svc-backup"]);
+Syslog
+// This one reads sshd, not auditd, so it keeps a facility filter rather than the
+// auditPrograms predicate the five auditd queries share. sshd writes its
+// authentication records to authpriv on every distribution in scope here.
+| where TimeGenerated > ago(window)
+| where Facility in ("auth", "authpriv")
+// sshd writes one of these lines per successful authentication. The two forms
+// are password and public key.
+| where SyslogMessage has "Accepted"
+| extend
+    Method = extract(@'Accepted (\w+) for', 1, SyslogMessage),
+    Account = extract(@'Accepted \w+ for (\S+) from', 1, SyslogMessage),
+    SourceAddress = extract(@'from (\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})', 1, SyslogMessage)
+| where Account != ""
+| where not (Account in (expectedNonInteractive))
+| extend ViaGateway = SourceAddress in (gatewayAddresses)
+| where not (ViaGateway)
+| project
+    TimeGenerated,
+    Computer,
+    Account,
+    SourceAddress,
+    Method,
+    SyslogMessage
+| order by TimeGenerated desc

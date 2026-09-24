@@ -1,0 +1,20 @@
+---
+galaxy_info:
+  role_name: pam_tty_audit
+  namespace: michealzs
+  author: Micheal
+  description: Captures TTY input for named privileged accounts through pam_tty_audit, with password capture off and gated behind two variables.
+  license: MIT
+  min_ansible_version: "2.15"
+  platforms:
+    - name: EL
+      versions:
+        - "8"
+        - "9"
+  galaxy_tags:
+    - pam
+    - audit
+    - keystroke
+    - security
+
+dependencies: []

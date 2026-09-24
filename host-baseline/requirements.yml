@@ -1,0 +1,13 @@
+---
+# Collections. Install with:
+#   ansible-galaxy collection install -r requirements.yml -p .collections
+#
+# There is one, and it is only needed to run the tests. The roles themselves use
+# ansible.builtin modules exclusively, which is deliberate: a host whose job is
+# to be a trustworthy witness is a host where the configuration management has
+# as few moving parts as possible.
+
+collections:
+  # Used by the molecule docker driver, not by any role.
+  - name: community.docker
+    version: 4.1.0

@@ -1,0 +1,40 @@
+---
+# Values every recorded host shares. The directory groups named here are the
+# join between the gateway recording and the host audit trail, so they have to
+# be the groups the gateway's OIDC claim actually carries.
+
+sssd_realm: EXAMPLE.COM
+sssd_domain: example.com
+
+# Off for configuration re-runs. Turn it on for a host being built, with the
+# join password from a vault:
+#   ansible-playbook site.yml --limit app-03 -e sssd_join_domain=true \
+#     -e @vault/join.yml --ask-vault-pass
+sssd_join_domain: false
+
+sssd_allowed_groups:
+  - example-linux-operators
+  - example-linux-admins
+sssd_sudo_groups:
+  - example-linux-admins
+
+# Recording is limited to the privileged group. Operators who can log in and not
+# elevate are not recorded, which is a policy decision and not an oversight: see
+# docs/threat-model.md for what it gives up.
+tlog_scope: some
+tlog_record_groups:
+  - example-linux-admins
+tlog_exclude_users:
+  - example-svc-backup
+
+tlog_collector_host: collector.example.com
+tlog_forward_tls: true
+tlog_forward_tls_ca_file: /etc/pki/tls/certs/example-collector-ca.pem
+tlog_forward_tls_permitted_peer: collector.example.com
+
+# pam_tty_audit matches usernames and not groups, so this list is accounts and
+# has to be maintained alongside the directory group above. See
+# roles/pam_tty_audit/README.md.
+pam_tty_audit_enable_patterns:
+  - root
+  - example.admin

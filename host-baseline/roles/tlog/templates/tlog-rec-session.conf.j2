@@ -1,0 +1,33 @@
+{#
+  tlog-rec-session.conf is parsed as JSON, so it cannot carry comments. Every
+  value here is documented in roles/tlog/defaults/main.yml, and the file is
+  rendered from a dict rather than written out by hand so that it cannot be
+  syntactically invalid. The task validates it with json.load anyway.
+-#}
+{{
+  {
+    "shell": tlog_shell,
+    "notice": tlog_notice,
+    "latency": tlog_latency | int,
+    "payload": tlog_payload | int,
+    "log": {
+      "input": tlog_log_input | bool,
+      "output": tlog_log_output | bool,
+      "window": tlog_log_window | bool,
+    },
+    "limit": {
+      "rate": tlog_limit_rate | int,
+      "burst": tlog_limit_burst | int,
+      "action": tlog_limit_action,
+    },
+    "writer": tlog_writer,
+    "journal": {
+      "priority": tlog_journal_priority,
+      "augment": tlog_journal_augment | bool,
+    },
+    "syslog": {
+      "facility": tlog_syslog_facility,
+      "priority": tlog_syslog_priority,
+    },
+  } | to_nice_json
+}}

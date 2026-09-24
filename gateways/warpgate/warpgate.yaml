@@ -1,0 +1,175 @@
+# Warpgate configuration.
+#
+# One binary, one config file, one SQLite database. It fronts SSH, HTTP and
+# MySQL; the Kubernetes API server is reached through the HTTP side because it is
+# an HTTPS endpoint, not because Warpgate knows what Kubernetes is. See
+# README.md for what that costs you in recording coverage.
+#
+# Warpgate rewrites this file when a target or a user is added through the admin
+# UI, so it is both hand written configuration and state. Treat a diff against
+# the committed copy as something to read, not something to revert blindly.
+#
+# The OIDC client secret lives in this file, which means the deployed copy is
+# secret material: mode 0600, owned by the service account, and never the copy
+# that is committed. The value below is an example.
+
+external_host: gateway.example.com
+database_url: "sqlite:/var/lib/warpgate/db"
+
+http:
+  enable: true
+  listen: "0.0.0.0:8888"
+  # Warpgate generates a self signed pair on first start. Replace both with a
+  # certificate for external_host before anyone is asked to trust this.
+  certificate: /var/lib/warpgate/tls.certificate.pem
+  key: /var/lib/warpgate/tls.key.pem
+  trust_x_forwarded_headers: false
+
+ssh:
+  enable: true
+  listen: "0.0.0.0:2222"
+  keys: /var/lib/warpgate/ssh-keys
+  # Warpgate presents its own host key to clients and verifies the target's key
+  # itself. "prompt" asks the first time and pins the answer; on a gateway with
+  # no interactive operator at the console, set this to "auto" only after the
+  # host keys are already in known_hosts.
+  host_key_verification: prompt
+
+mysql:
+  enable: false
+
+recordings:
+  enable: true
+  path: /var/lib/warpgate/recordings
+  # Warpgate records the terminal stream for SSH sessions as an asciicast, plus
+  # a session log. Recording is on or off for the whole instance, which is the
+  # one thing it does better than Guacamole: there is no per target setting to
+  # forget.
+
+log:
+  # How long Warpgate keeps its own session log rows. This is not recording
+  # retention: the files under recordings.path are not pruned by Warpgate and
+  # need a job of their own.
+  retention: 90 days
+
+sso_providers:
+  - name: directory
+    label: Sign in with the directory
+    provider:
+      type: custom
+      client_id: "00000000-0000-0000-0000-000000000000"
+      client_secret: "example-client-secret-replace-me"
+      # Discovery document lives at <issuer_url>/.well-known/openid-configuration.
+      issuer_url: "https://login.example.com/00000000-0000-0000-0000-000000000000/v2.0"
+      scopes:
+        - openid
+        - profile
+        - email
+      # Warpgate matches an SSO login against the email on the user entries
+      # below, so the directory has to release a verified email claim and it has
+      # to be the same address the host baseline sees from sssd. If the two
+      # disagree, sign in works and the audit trails cannot be joined.
+
+users:
+  # No password credential anywhere in this file. Each user is an SSO identity
+  # plus a role, and the role is what a target allows.
+  - username: example.admin
+    credentials:
+      - type: sso
+        provider: directory
+        email: example.admin@example.com
+    require:
+      http:
+        - sso
+      ssh:
+        - sso
+    roles:
+      - linux-admins
+      - warpgate:admin
+
+  - username: example.operator
+    credentials:
+      - type: sso
+        provider: directory
+        email: example.operator@example.com
+    require:
+      http:
+        - sso
+      ssh:
+        - sso
+    roles:
+      - linux-operators
+
+roles:
+  - name: warpgate:admin
+  - name: linux-admins
+  - name: linux-operators
+  - name: kube-readers
+
+targets:
+  # SSH. Recorded: terminal input and output, as an asciicast.
+  - name: example-app-01
+    allow_roles:
+      - linux-admins
+      - linux-operators
+    options:
+      kind: Ssh
+      host: app-01.internal.example.com
+      port: 22
+      username: svc-gateway
+      # The gateway authenticates to the target with its own key, which is what
+      # lets target accounts have no interactive password at all. The identity
+      # in the recording is the Warpgate user, not svc-gateway, so the join
+      # between the two lives in the recording metadata and in the host's own
+      # audit trail.
+      auth:
+        kind: PublicKey
+
+  - name: example-db-01
+    allow_roles:
+      - linux-admins
+    options:
+      kind: Ssh
+      host: db-01.internal.example.com
+      port: 22
+      username: svc-gateway
+      auth:
+        kind: PublicKey
+
+  # HTTPS. Proxied and logged as requests. Not recorded as a session.
+  - name: example-internal-dashboard
+    allow_roles:
+      - linux-admins
+      - linux-operators
+    options:
+      kind: Http
+      url: "https://dashboard.internal.example.com"
+      # Warpgate cannot verify a self signed certificate on an internal target
+      # without this. Turning it on is a real downgrade; fix the certificate
+      # instead where you can.
+      tls:
+        mode: Required
+        verify: true
+      headers:
+        X-Forwarded-Host: dashboard.internal.example.com
+
+  # Kubernetes API server, as an HTTPS target. kubectl works through it with
+  # the proxy URL as the server, and it is NOT session recorded: see README.md.
+  - name: example-kubernetes
+    allow_roles:
+      - linux-admins
+      - kube-readers
+    options:
+      kind: Http
+      url: "https://kubernetes.internal.example.com:443"
+      tls:
+        mode: Required
+        verify: true
+
+  # Warpgate's own admin UI is a target like any other, so reaching it is a role
+  # decision and it appears in the same log as everything else.
+  - name: warpgate:admin
+    allow_roles:
+      - warpgate:admin
+    options:
+      kind: WebAdmin

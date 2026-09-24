@@ -1,0 +1,120 @@
+---
+auditd_packages:
+  - audit
+  # audispd-plugins is what lets audit events leave the host through syslog.
+  - audispd-plugins
+
+auditd_rules_file: /etc/audit/rules.d/50-privileged-access.rules
+
+# Lowest uid treated as a real person. Read from login.defs on most hosts; set
+# explicitly here because every rule below keys off it and a wrong value makes
+# the whole rule set either silent or unusable.
+auditd_uid_min: 1000
+
+# Record every command a real user runs. This is the single loudest rule in the
+# set and also the one that answers "what did they actually do", so it is on and
+# docs/audit-volume.md is the file to read before deciding how long to keep it.
+auditd_log_execve: true
+
+# Files whose modification is recorded. A change to any of these changes who can
+# log in or what they can do.
+auditd_watch_identity:
+  - /etc/passwd
+  - /etc/group
+  - /etc/shadow
+  - /etc/gshadow
+  - /etc/security/opasswd
+
+auditd_watch_sudoers:
+  - /etc/sudoers
+  - /etc/sudoers.d/
+
+# The recording configuration itself. Somebody turning recording off is the
+# event this whole repository exists to notice, and it is a file change.
+auditd_watch_recording_config:
+  - /etc/tlog/
+  - /etc/sssd/
+  - /etc/pam.d/
+  - /etc/rsyslog.d/
+  - /etc/systemd/journald.conf.d/
+
+# The audit configuration. Watched separately so the query for "somebody edited
+# the auditing" is one key and not mixed in with the rest.
+auditd_watch_audit_config:
+  - /etc/audit/
+  - /etc/audit/rules.d/
+
+auditd_watch_logins:
+  - /var/log/lastlog
+  - /var/run/faillock/
+
+# Privileged binaries whose execution by a real user is recorded individually,
+# so "who used sudo" is one key and does not require reading every execve.
+auditd_privileged_commands:
+  - /usr/bin/sudo
+  - /usr/bin/su
+  - /usr/bin/passwd
+  - /usr/bin/chage
+  - /usr/bin/gpasswd
+  - /usr/bin/newgrp
+  - /usr/sbin/usermod
+  - /usr/sbin/useradd
+  - /usr/sbin/userdel
+  - /usr/sbin/groupadd
+  - /usr/sbin/groupdel
+  - /usr/bin/crontab
+
+auditd_log_kernel_modules: true
+
+# Raw rules appended verbatim. Anything host specific goes here rather than into
+# the template.
+auditd_extra_rules: []
+
+# -e 2 makes the loaded rules immutable until the next reboot. It is the right
+# end state and it means a re-run of this role cannot reload rules, so it is off
+# by default and turned on once the rule set has settled.
+auditd_immutable: false
+
+# Send audit events to syslog, which is what gets them off the host through the
+# same rsyslog the tlog role configures. The plugin is part of
+# audispd-plugins.
+auditd_forward_to_syslog: true
+auditd_syslog_plugin_path: /etc/audit/plugins.d/syslog.conf
+
+# The "args" line in that plugin file, which is the facility and the priority
+# audisp-syslog calls openlog() with. This is not cosmetic: the plugin ships with
+# "args = LOG_INFO" and no facility, and with no facility named the plugin never
+# calls openlog() at all, so every audit event arrives on the default facility of
+# "user" and under the ident audisp-syslog rather than audispd. A facility of their
+# own is what lets the audit trail be filtered apart from every PAM and sshd
+# message, and it is the facility pipeline/variables.tf collects and
+# pipeline/agent/audisp-syslog.conf documents. The parser matches each argument by
+# name, so the order of the two does not matter.
+auditd_syslog_facility: LOG_LOCAL6
+# info is right: audit events are not errors, and writing them at a higher
+# priority puts them in front of things that are.
+auditd_syslog_priority: LOG_INFO
+
+# /etc/audit/auditd.conf. ENRICHED resolves uids and names at write time, so an
+# event still reads correctly after the account is deleted or the host is gone,
+# which matters the moment the log is read anywhere other than the host.
+#
+# admin_space_left_action is the decision worth arguing about: SYSLOG keeps the
+# host usable and accepts an audit gap, SINGLE and HALT keep the audit trail
+# complete and take the host out of service. See README.md.
+auditd_conf_settings:
+  log_format: ENRICHED
+  flush: INCREMENTAL_ASYNC
+  freq: 50
+  max_log_file: 100
+  num_logs: 10
+  max_log_file_action: ROTATE
+  space_left: 500
+  space_left_action: SYSLOG
+  admin_space_left: 200
+  admin_space_left_action: SYSLOG
+  disk_full_action: SYSLOG
+  disk_error_action: SYSLOG
+  name_format: HOSTNAME
+
+auditd_manage_service: true

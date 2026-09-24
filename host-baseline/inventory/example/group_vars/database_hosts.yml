@@ -1,0 +1,32 @@
+---
+# Database hosts run one more privileged binary than the rest, and the people who
+# reach them are a different group.
+
+sssd_allowed_groups:
+  - example-linux-admins
+  - example-database-admins
+sssd_sudo_groups:
+  - example-linux-admins
+  - example-database-admins
+
+tlog_record_groups:
+  - example-linux-admins
+  - example-database-admins
+
+auditd_privileged_commands:
+  - /usr/bin/sudo
+  - /usr/bin/su
+  - /usr/bin/passwd
+  - /usr/bin/chage
+  - /usr/bin/gpasswd
+  - /usr/bin/newgrp
+  - /usr/sbin/usermod
+  - /usr/sbin/useradd
+  - /usr/sbin/userdel
+  - /usr/sbin/groupadd
+  - /usr/sbin/groupdel
+  - /usr/bin/crontab
+  # Reads and writes every row in the database, and is the reason a database
+  # host needs its own list rather than the default one.
+  - /usr/bin/psql
+  - /usr/bin/pg_dump

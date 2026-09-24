@@ -1,0 +1,43 @@
+// A host that was reporting audit events and has stopped.
+//
+// recording-config-changed.kql catches somebody editing the recording
+// configuration. It cannot catch somebody who stops auditd first, because then
+// there is no event to catch. The only signal left is absence, and absence is
+// what this query looks for.
+//
+// Run it over a window long enough that a reboot does not look like an
+// incident. The default below is 24 hours of history against a 2 hour gap.
+//
+// This query reports a gap. It does not report a cause: a host being patched, a
+// host that was shut down and a host whose auditd was killed all look the same
+// from here. That ambiguity is the reason this is a hunting query rather than an
+// alert.
+let lookback = 24h;
+let gapThreshold = 2h;
+// The programs the audit trail arrives as. audisp-syslog is the current ident and
+// audispd is the older one, and this is the same predicate every auditd query in
+// this directory uses: keying off the program rather than the syslog facility
+// means a host configured with the upstream default facility is still matched.
+let auditPrograms = dynamic(["audispd", "audisp-syslog"]);
+let reporting =
+    Syslog
+    | where TimeGenerated > ago(lookback)
+    | where ProcessName in (auditPrograms)
+    | summarize
+        FirstSeen = min(TimeGenerated),
+        LastSeen = max(TimeGenerated),
+        Events = count()
+        by Computer;
+reporting
+| extend Silence = now() - LastSeen
+| where Silence > gapThreshold
+// A host seen for the first time an hour ago and quiet since is a build in
+// progress, not a host that went dark. Require some history before calling it.
+| where FirstSeen < ago(gapThreshold)
+| project
+    Computer,
+    LastSeen,
+    Silence,
+    FirstSeen,
+    EventsInWindow = Events
+| order by Silence desc

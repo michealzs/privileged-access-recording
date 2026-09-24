@@ -1,0 +1,41 @@
+---
+# Applies all four roles with the services left unmanaged, because a container
+# has no kernel audit socket, no working directory to join and no login to
+# record. Every file is still rendered and checked; see molecule.yml for what
+# that does and does not prove.
+
+- name: Converge
+  hosts: all
+  become: true
+  vars:
+    sssd_manage_services: false
+    sssd_join_domain: false
+    sssd_allowed_groups:
+      - example-linux-operators
+      - example-linux-admins
+    sssd_sudo_groups:
+      - example-linux-admins
+
+    auditd_manage_service: false
+
+    tlog_manage_services: false
+    tlog_scope: some
+    tlog_record_groups:
+      - example-linux-admins
+    tlog_exclude_users:
+      - example-svc-backup
+    tlog_forward_enabled: true
+    tlog_collector_host: collector.example.com
+    # No certificate authority file exists in the container, and rsyslog is
+    # never started, so the TLS block is rendered and not exercised.
+    tlog_forward_tls: true
+
+    pam_tty_audit_enabled: true
+    pam_tty_audit_enable_patterns:
+      - root
+      - example.admin
+  roles:
+    - role: sssd
+    - role: auditd
+    - role: tlog
+    - role: pam_tty_audit

@@ -1,0 +1,12 @@
+# {{ ansible_managed }}
+#
+# Directory groups granted sudo. Validated with "visudo -cf" before this file is
+# installed, because a syntax error here locks sudo for everyone including the
+# account that would fix it.
+
+# Every sudo invocation is logged to the audit trail by auditd, and the tty is
+# recorded by tlog. Neither depends on this file; both are here as a reminder
+# that loosening it loosens what the evidence can attribute.
+{% for group in sssd_sudo_groups %}
+%{{ group }} ALL=(ALL) {% if sssd_sudo_nopasswd %}NOPASSWD: {% endif %}{{ sssd_sudo_commands }}
+{% endfor %}

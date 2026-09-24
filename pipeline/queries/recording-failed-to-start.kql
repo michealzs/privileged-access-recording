@@ -1,0 +1,85 @@
+// Interactive logins with no session recording behind them.
+//
+// This is the query that matters most in this directory. Every other one reads
+// the recordings; this one looks for the sessions that should have produced a
+// recording and did not, which is the only way a silent failure in the shell
+// substitution becomes visible.
+//
+// Filters, in order:
+//   1. Logins: sshd session-open records from Syslog over the window. The
+//      username is pulled out of the message with a regular expression, because
+//      sshd writes it into the text and not into a field.
+//   2. Service accounts and the accounts that are deliberately not recorded are
+//      excluded here, from one list, so the exclusion is visible in the output of
+//      the query rather than buried in a join.
+//   3. Recordings: the tlog session fragments over the same window, reduced to
+//      one row per user and host with the times it was recording.
+//   4. A left outer join on host and user, then a time tolerance: a login is
+//      recorded if a tlog session on the same host for the same user was running
+//      at the time, allowing toleranceMinutes of slack for the shell substitution
+//      to start writing. A login with no such session is a finding. The tolerance
+//      is why this is not a plain left anti join on host and user: that form
+//      suppresses every login on a host for anyone recorded there even once,
+//      which hides exactly the failure this query exists to find.
+//
+// Known false positives and gaps when this was written:
+//   - A non-interactive "ssh host command" opens and closes a PAM session without
+//      a login shell, so it never produces a recording. It is a true absence and a
+//      false finding, and the only reliable way to separate it from a real gap is
+//      whether a shell was allocated, which the sshd message does not say.
+//      Expect these, and expect them to be the bulk of the output on a host that
+//      anything automated logs into.
+//   - scp and sftp behave the same way, for the same reason.
+//   - A login by a user in a group outside tlog_record_groups is not a failure. It
+//      is the policy working, and it is why unrecordedAccounts exists.
+//   - A recording that started and was then dropped by journald rate limiting
+//      produces fragments, so it passes this query while being incomplete. That
+//      failure is invisible from here; it is why the rate limits are configured
+//      off in the tlog role rather than monitored.
+//
+// Tune toleranceMinutes first if this is noisy. Raising the window does not help.
+let window = 7d;
+let toleranceMinutes = 5m;
+let unrecordedAccounts = dynamic([
+    "example-svc-backup",
+    "example-svc-monitoring",
+    "root"
+]);
+let logins =
+    Syslog
+    | where TimeGenerated > ago(window)
+    | where ProcessName == "sshd"
+    | where SyslogMessage startswith "Accepted" or SyslogMessage has "session opened for user"
+    | extend LoginUser = extract(@"(?:for user |for )([A-Za-z0-9._@-]+)", 1, SyslogMessage)
+    | where isnotempty(LoginUser)
+    | where LoginUser !in (unrecordedAccounts)
+    | project LoginTime = TimeGenerated, Computer, LoginUser
+    // One id per login, so the join below can fan out over every recording for
+    // that user and host and then be collapsed back to one row per login.
+    | serialize LoginId = row_number();
+let recordings =
+    Syslog
+    | where TimeGenerated > ago(window)
+    | where ProcessName == "tlog-rec-session"
+    | extend rec = parse_json(SyslogMessage)
+    | extend RecordedUser = tostring(rec.user)
+    | where isnotempty(RecordedUser)
+    | summarize RecordingStart = min(TimeGenerated), RecordingEnd = max(TimeGenerated)
+        by Computer, RecordedUser, SessionId = tostring(rec.session);
+logins
+| join kind=leftouter (
+    recordings
+    | project Computer, LoginUser = RecordedUser, RecordingStart, RecordingEnd
+  ) on Computer, LoginUser
+| extend CoveredByThisRecording = iff(
+    isnotnull(RecordingStart)
+      and LoginTime between ((RecordingStart - toleranceMinutes) .. RecordingEnd),
+    1,
+    0
+  )
+| summarize Covered = max(CoveredByThisRecording) by LoginId, LoginTime, Computer, LoginUser
+| where Covered == 0
+| summarize UnrecordedLogins = count(), FirstSeen = min(LoginTime), LastSeen = max(LoginTime)
+    by Computer, LoginUser
+| extend Note = "Login with no tlog session covering it on this host. Check whether a login shell was allocated before treating it as a recording failure."
+| order by UnrecordedLogins desc

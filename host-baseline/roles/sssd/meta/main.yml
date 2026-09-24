@@ -1,0 +1,20 @@
+---
+galaxy_info:
+  role_name: sssd
+  namespace: michealzs
+  author: Micheal
+  description: Joins a host to an enterprise directory with sssd, restricts login to named groups and grants sudo to a subset of them.
+  license: MIT
+  min_ansible_version: "2.15"
+  platforms:
+    - name: EL
+      versions:
+        - "8"
+        - "9"
+  galaxy_tags:
+    - sssd
+    - identity
+    - authentication
+    - security
+
+dependencies: []

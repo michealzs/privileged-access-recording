@@ -1,0 +1,20 @@
+---
+# sssd is what substitutes the shell, so a change to the session recording
+# snippet does nothing until sssd rereads it.
+- name: Restart sssd for session recording
+  ansible.builtin.systemd_service:
+    name: sssd
+    state: restarted
+  when: tlog_manage_services | bool
+
+- name: Restart rsyslog
+  ansible.builtin.systemd_service:
+    name: rsyslog
+    state: restarted
+  when: tlog_manage_services | bool
+
+- name: Restart systemd-journald
+  ansible.builtin.systemd_service:
+    name: systemd-journald
+    state: restarted
+  when: tlog_manage_services | bool

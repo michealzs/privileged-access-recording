@@ -1,0 +1,73 @@
+# Terraform working directories and provider binaries
+**/.terraform/
+*.tfplan
+tfplan
+
+# State never belongs in git.
+*.tfstate
+*.tfstate.*
+
+# Crash logs
+crash.log
+crash.*.log
+
+# Generated variable files. Committed .tfvars.example files are inputs and are kept.
+*.tfvars
+*.tfvars.json
+*.auto.tfvars
+!*.tfvars.example
+
+# Override files are for local experiments only
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# CLI configuration
+.terraformrc
+terraform.rc
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Ansible
+host-baseline/.collections/
+host-baseline/.facts_cache/
+*.retry
+
+# Molecule
+host-baseline/molecule/*/.molecule/
+
+# Local inventories with real hosts, keys or vault files
+host-baseline/inventory/local/
+host-baseline/inventory/production/
+*.vault
+
+# Guacamole runtime state. The compose file mounts these; nothing here is committed.
+gateways/guacamole/.env
+gateways/guacamole/recordings/
+gateways/guacamole/initdb/
+
+# Warpgate and Teleport runtime state. Both write host keys and certificates
+# next to their configuration on first start.
+gateways/warpgate/data/
+gateways/teleport/data/
+
+# Scratch space for downloaded tool binaries. Never commit a binary.
+.tmp/
+
+# Editors and OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Provider lock files pin versions for each Terraform root and are kept.
+!**/.terraform.lock.hcl
+
+# Local values for the README Context section, and the README rendered from them.
+context.env
+README.local.md

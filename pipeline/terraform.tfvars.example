@@ -1,0 +1,41 @@
+# Copy to terraform.tfvars and replace every value. The all-zero GUID means a
+# value you supply before this code will run.
+
+subscription_id     = "00000000-0000-0000-0000-000000000000"
+resource_group_name = "example-rg-recorded-access"
+location            = "uksouth"
+workspace_name      = "example-law-recorded-access"
+
+# 90 days queryable, two years in the archive. Session recordings are the bulk of
+# this, so read host-baseline/docs/audit-volume.md before changing either.
+syslog_interactive_retention_in_days = 90
+syslog_total_retention_in_days       = 730
+
+# An alarm, not a budget: ingestion stops for the rest of the day when it is hit,
+# and on this workspace that means the audit trail stops arriving.
+daily_quota_gb = 20
+
+# The collector: the machine that receives the forward from every recorded host
+# and runs the agent. A machine with the agent installed and no association here
+# collects nothing and reports no error.
+collector_vm_resource_id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/example-rg/providers/Microsoft.Compute/virtualMachines/example-collector"
+
+# Any hosts that ship to the workspace directly instead of through the collector.
+additional_machine_resource_ids = [
+  "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/example-rg/providers/Microsoft.HybridCompute/machines/example-app-01",
+]
+
+# The alert on queries/recording-config-changed.kql. Without an action group it
+# fires into a list nobody is watching.
+alert_enabled   = true
+alert_severity  = 1
+action_group_id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/example-rg/providers/Microsoft.Insights/actionGroups/example-oncall"
+
+# Off by default. It drops messages at ingestion, which means they are not in the
+# archive either.
+enable_ingestion_transform = false
+
+tags = {
+  owner   = "example-platform-team"
+  purpose = "recorded-privileged-access"
+}

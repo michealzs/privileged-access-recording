@@ -1,0 +1,43 @@
+// What tlog actually recorded, per person and per host.
+//
+// Two uses. The first is the one that matters: comparing this against the list
+// of people who are supposed to be recorded. A member of a recorded group whose
+// name never appears here is a gap, and the usual cause is sssd resolving them
+// from somewhere other than the directory, which means the shell substitution
+// never happened.
+//
+// The second is volume. Session count and byte count per person is what
+// host-baseline/docs/audit-volume.md is estimated from, and the estimate should
+// be replaced with a measurement from this query on a real host.
+//
+// tlog writes its session payloads through the journal, and rsyslog forwards
+// them with programname tlog-rec-session. The TLOG_USER and TLOG_SESSION fields
+// are structured in the journal and flattened into the message by the time they
+// reach here, so they are extracted rather than selected.
+let window = 7d;
+Syslog
+| where TimeGenerated > ago(window)
+| where ProcessName == "tlog-rec-session"
+| extend
+    RecordedUser = extract(@'"user":"([^"]+)"', 1, SyslogMessage),
+    SessionId = extract(@'"session":([0-9]+)', 1, SyslogMessage),
+    Recording = extract(@'"rec":"([^"]+)"', 1, SyslogMessage)
+| where RecordedUser != ""
+| summarize
+    Sessions = dcount(SessionId),
+    Messages = count(),
+    Bytes = sum(strlen(SyslogMessage)),
+    FirstSeen = min(TimeGenerated),
+    LastSeen = max(TimeGenerated)
+    by RecordedUser, Computer
+| extend AverageMessagesPerSession = round(todouble(Messages) / todouble(Sessions), 1)
+| project
+    RecordedUser,
+    Computer,
+    Sessions,
+    Messages,
+    AverageMessagesPerSession,
+    BytesApprox = Bytes,
+    FirstSeen,
+    LastSeen
+| order by Sessions desc

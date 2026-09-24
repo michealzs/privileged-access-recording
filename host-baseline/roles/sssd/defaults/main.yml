@@ -1,0 +1,89 @@
+---
+# Packages that make an enterprise directory join work on the RHEL family.
+sssd_packages:
+  - sssd
+  - sssd-tools
+  - sssd-ad
+  - realmd
+  - adcli
+  - oddjob
+  - oddjob-mkhomedir
+  - samba-common-tools
+  - krb5-workstation
+  - authselect
+
+# Directory to join. sssd_realm is the Kerberos realm and is upper case by
+# convention; sssd_domain is the same name as the directory writes it.
+sssd_realm: EXAMPLE.COM
+sssd_domain: example.com
+
+# Whether this role is allowed to run "realm join". False leaves an existing
+# join alone and only manages configuration, which is what the molecule
+# scenario and any re-run against a joined host want.
+sssd_join_domain: false
+
+# Account with permission to add computer objects, and its password. The
+# password has no default on purpose: pass it from a vault at run time.
+sssd_join_account: example-join-account
+sssd_join_password: ""
+# Organisational unit the computer object is created in. Empty means the
+# directory's default container.
+sssd_join_computer_ou: ""
+
+# Groups allowed to log in at all. This is the access control list, and it is
+# the list the recording keys off: a session only exists for a member of one of
+# these groups, so every recording has a directory identity behind it.
+sssd_allowed_groups:
+  - example-linux-operators
+  - example-linux-admins
+
+# Groups granted sudo. A subset of sssd_allowed_groups in every sane
+# configuration, and the role fails early if it is not.
+sssd_sudo_groups:
+  - example-linux-admins
+
+# Commands the sudo groups may run. ALL is the default because restricting the
+# command set at the sudoers layer is a separate piece of work, and a false
+# sense of restriction is worse than none.
+sssd_sudo_commands: ALL
+# Require a password for sudo. Passwordless sudo breaks the correlation between
+# a directory authentication and a privileged command.
+sssd_sudo_nopasswd: false
+
+# id mapping generates POSIX uids from the directory SID. Set to false only
+# when the directory publishes uidNumber and gidNumber and you intend to use
+# them, because changing this on a host that already has files owned by mapped
+# uids orphans every one of them.
+sssd_ldap_id_mapping: true
+
+# Short names, so the username in a recording is "example.admin" and not
+# "example.admin@example.com". It has to match the claim the gateway puts in the
+# recording filename.
+sssd_use_fully_qualified_names: false
+
+# Home directory template and login shell for directory users. The tlog role
+# overrides the shell for recorded groups through sssd's own session recording
+# section, so this stays the real shell.
+sssd_override_homedir: /home/%u
+sssd_default_shell: /bin/bash
+
+# Enumeration walks the whole directory to answer "getent passwd". It is slow,
+# it is a lot of directory traffic, and nothing here needs it.
+sssd_enumerate: false
+
+# Credential caching lets a host authenticate a user it has seen before while
+# the directory is unreachable. It is the reason a directory outage does not
+# lock everyone out of every host at once, and the reason a disabled account can
+# still log in for as long as the cache lives.
+sssd_cache_credentials: true
+sssd_offline_credentials_expiration: 7
+
+sssd_config_path: /etc/sssd/sssd.conf
+# Run sssctl config-check over sssd.conf before installing it. Off only where
+# sssctl is unavailable.
+sssd_validate_config: true
+sssd_sudoers_path: /etc/sudoers.d/60-directory-admins
+
+# Manage and start sssd and oddjobd. False for container testing, where there
+# is no working systemd to talk to and nothing to authenticate against.
+sssd_manage_services: true

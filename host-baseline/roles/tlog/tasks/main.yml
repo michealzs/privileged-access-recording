@@ -1,0 +1,150 @@
+---
+- name: Fail when the recording scope names nothing to record
+  ansible.builtin.assert:
+    that:
+      - (tlog_record_groups | length + tlog_record_users | length) > 0
+    fail_msg: >-
+      tlog_scope is "some" but tlog_record_groups and tlog_record_users are both
+      empty, which records nobody. Set one of them, or set tlog_scope to "none"
+      if turning recording off is what is intended.
+    quiet: true
+  when: tlog_scope == 'some'
+
+- name: Install tlog
+  ansible.builtin.dnf:
+    name: "{{ tlog_packages }}"
+    state: present
+
+- name: Deploy the tlog session recording configuration
+  ansible.builtin.template:
+    src: tlog-rec-session.conf.j2
+    dest: "{{ tlog_config_path }}"
+    owner: root
+    group: root
+    # World readable on purpose: tlog-rec-session runs as the user being
+    # recorded and reads this file. Nothing secret goes in it.
+    mode: "0644"
+    validate: /usr/bin/python3 -c "import json,sys; json.load(open(sys.argv[1]))" %s
+
+- name: Create the sssd configuration snippet directory
+  ansible.builtin.file:
+    path: "{{ tlog_sssd_snippet_path | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0711"
+
+- name: Limit session recording to the privileged groups
+  ansible.builtin.template:
+    src: sssd-session-recording.conf.j2
+    dest: "{{ tlog_sssd_snippet_path }}"
+    owner: root
+    group: root
+    # sssd ignores a snippet that is readable by anyone else.
+    mode: "0600"
+  notify: Restart sssd for session recording
+
+- name: Create the journald drop-in directory
+  ansible.builtin.file:
+    path: "{{ tlog_journald_drop_in_path | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: tlog_configure_journald | bool
+
+- name: Stop journald rate limiting from discarding recorded sessions
+  ansible.builtin.template:
+    src: journald-session-recording.conf.j2
+    dest: "{{ tlog_journald_drop_in_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  when: tlog_configure_journald | bool
+  notify: Restart systemd-journald
+
+- name: Install rsyslog for the remote forward
+  ansible.builtin.dnf:
+    name: "{{ ['rsyslog'] + (['rsyslog-gnutls'] if tlog_forward_tls | bool else []) }}"
+    state: present
+  when: tlog_forward_enabled | bool
+
+- name: Create the rsyslog spool directory
+  ansible.builtin.file:
+    path: "{{ tlog_forward_spool_directory }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  when: tlog_forward_enabled | bool
+
+# Where the imjournal rate limit override has to go, and why it is not simply
+# another module(load="imjournal") in the drop-in: /etc/rsyslog.conf loads the
+# module and then includes /etc/rsyslog.d/*.conf, and rsyslog treats a second load
+# of an already loaded input module as a no-op rather than re-reading its
+# parameters. Written the obvious way, the override renders into a file, passes a
+# text assertion, and never reaches the running input.
+- name: Find out whether the main rsyslog configuration loads imjournal
+  ansible.builtin.command:
+    cmd: grep -Eq '^[[:space:]]*module\(load="imjournal"' {{ tlog_rsyslog_main_config }}
+  register: tlog_imjournal_in_main_config
+  changed_when: false
+  failed_when: tlog_imjournal_in_main_config.rc not in [0, 1]
+  when: tlog_forward_enabled | bool
+
+- name: Disable imjournal rate limiting where imjournal is actually loaded
+  ansible.builtin.replace:
+    path: "{{ tlog_rsyslog_main_config }}"
+    # Anchored on the module load itself rather than on the whole statement,
+    # because the rest of the block differs between releases. The negative
+    # lookahead is what makes a second run a no-op.
+    regexp: '^(\s*module\(load="imjournal")(?! Ratelimit\.Interval)'
+    replace: '\1 Ratelimit.Interval="0" Ratelimit.Burst="0"'
+  when:
+    - tlog_forward_enabled | bool
+    - tlog_imjournal_in_main_config.rc | default(1) == 0
+  notify: Restart rsyslog
+
+- name: Forward recorded sessions to the collector
+  ansible.builtin.template:
+    src: rsyslog-tlog-remote.conf.j2
+    dest: "{{ tlog_rsyslog_config_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  vars:
+    # The drop-in loads imjournal only when the main configuration does not. See
+    # the two tasks above.
+    tlog_load_imjournal: "{{ tlog_imjournal_in_main_config.rc | default(1) != 0 }}"
+  when: tlog_forward_enabled | bool
+  notify: Restart rsyslog
+
+# The one check that reads the configuration the way rsyslog will. A rendered file
+# that greps correctly and a running input with its rate limit still on look
+# identical from a template assertion, which is the failure this catches. Skipped
+# where the services are unmanaged, because the molecule container has no
+# certificate for the TLS block to open.
+- name: Check the whole rsyslog configuration parses
+  ansible.builtin.command:
+    cmd: /usr/sbin/rsyslogd -N1
+  register: tlog_rsyslog_config_check
+  changed_when: false
+  when:
+    - tlog_forward_enabled | bool
+    - tlog_manage_services | bool
+
+- name: Remove the forward when it is switched off
+  ansible.builtin.file:
+    path: "{{ tlog_rsyslog_config_path }}"
+    state: absent
+  when: not tlog_forward_enabled | bool
+  notify: Restart rsyslog
+
+- name: Enable and start rsyslog
+  ansible.builtin.systemd_service:
+    name: rsyslog
+    enabled: true
+    state: started
+  when:
+    - tlog_forward_enabled | bool
+    - tlog_manage_services | bool

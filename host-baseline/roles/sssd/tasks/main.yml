@@ -1,0 +1,111 @@
+---
+- name: Fail when a sudo group is not also an allowed group
+  ansible.builtin.assert:
+    that:
+      - sssd_sudo_groups | difference(sssd_allowed_groups) | length == 0
+    fail_msg: >-
+      Every group in sssd_sudo_groups must also be in sssd_allowed_groups.
+      Groups only in sssd_sudo_groups get sudo and cannot log in, which looks
+      like a broken host rather than a policy decision.
+    quiet: true
+
+- name: Fail when a domain join is requested without a password
+  ansible.builtin.assert:
+    that:
+      - sssd_join_password | length > 0
+    fail_msg: >-
+      sssd_join_domain is true but sssd_join_password is empty. Pass it from a
+      vault at run time; it is not in defaults and must not be added there.
+    quiet: true
+  when: sssd_join_domain | bool
+
+- name: Install the directory client packages
+  ansible.builtin.dnf:
+    name: "{{ sssd_packages }}"
+    state: present
+
+- name: Read the current realm membership
+  ansible.builtin.command:
+    cmd: realm list --name-only
+  register: sssd_realm_list
+  changed_when: false
+  failed_when: false
+
+- name: Join the directory
+  ansible.builtin.command:
+    cmd: >-
+      realm join
+      --user={{ sssd_join_account }}
+      {{ ('--computer-ou=' ~ sssd_join_computer_ou) if sssd_join_computer_ou | length > 0 else '' }}
+      --unattended
+      {{ sssd_realm }}
+    stdin: "{{ sssd_join_password }}"
+  register: sssd_realm_join
+  changed_when: sssd_realm_join.rc == 0
+  no_log: true
+  when:
+    - sssd_join_domain | bool
+    - sssd_realm | lower not in (sssd_realm_list.stdout_lines | map('lower') | list)
+  notify: Restart sssd
+
+- name: Read the current authselect profile
+  ansible.builtin.command:
+    cmd: authselect current --raw
+  register: sssd_authselect_current
+  changed_when: false
+  failed_when: false
+
+- name: Select the sssd authselect profile with home directory creation
+  ansible.builtin.command:
+    cmd: authselect select sssd with-mkhomedir --force
+  register: sssd_authselect_select
+  changed_when: sssd_authselect_select.rc == 0
+  when: >-
+    'sssd' not in sssd_authselect_current.stdout
+    or 'with-mkhomedir' not in sssd_authselect_current.stdout
+
+- name: Create the sssd configuration directory
+  ansible.builtin.file:
+    path: /etc/sssd/conf.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0711"
+
+- name: Deploy sssd.conf
+  ansible.builtin.template:
+    src: sssd.conf.j2
+    dest: "{{ sssd_config_path }}"
+    owner: root
+    group: root
+    # sssd refuses to start if this file is group or world readable.
+    mode: "0600"
+    # sssctl parses the file before it is moved into place, so a typo is a
+    # failed task and not an sssd that will not start after the next reboot.
+    validate: "{{ '/usr/sbin/sssctl config-check -c %s' if sssd_validate_config | bool else omit }}"
+  notify: Restart sssd
+
+- name: Grant sudo to the directory admin groups
+  ansible.builtin.template:
+    src: sudoers.j2
+    dest: "{{ sssd_sudoers_path }}"
+    owner: root
+    group: root
+    mode: "0440"
+    # A malformed file here locks sudo for everyone, including the account
+    # that would fix it. visudo -cf is what stops that being deployed.
+    validate: /usr/sbin/visudo -cf %s
+
+- name: Enable and start oddjobd for home directory creation
+  ansible.builtin.systemd_service:
+    name: oddjobd
+    enabled: true
+    state: started
+  when: sssd_manage_services | bool
+
+- name: Enable and start sssd
+  ansible.builtin.systemd_service:
+    name: sssd
+    enabled: true
+    state: started
+  when: sssd_manage_services | bool

@@ -1,0 +1,83 @@
+// A privileged role activation, followed by a session.
+//
+// This is the join that makes time bound elevation auditable rather than
+// decorative. On its own an activation record says somebody took a privilege; on
+// its own a recording says somebody used a host. Together they say which
+// activation the session belongs to, which is what an after-action review asks
+// for first.
+//
+// Filters, in order:
+//   1. AuditLogs over the window, for the activation activities. PIM for Groups,
+//      which is what identity/pim.tf configures, writes an activation as a group
+//      membership add with "PIM activation" in the activity name, and that lands
+//      under GroupManagement rather than RoleManagement. Both categories are
+//      matched, because a directory that also has PIM on directory roles writes
+//      the second shape. Filtering on RoleManagement alone returns nothing
+//      against the configuration in identity/.
+//   2. The activating principal is read from InitiatedBy. Directories vary in
+//      whether the user principal name or the object id is populated, so both are
+//      extracted and the principal name falls back to the id.
+//   3. Recordings over the same window, one row per session.
+//   4. An inner join on the principal name against the recorded username. This is
+//      the join that fails if the directory's username claim and sssd's username
+//      format disagree: see roles/sssd/README.md, because that mismatch is the
+//      most common reason this query returns nothing on a working deployment.
+//   5. Only sessions that began after the activation and within
+//      activationValidFor of it.
+//
+// Known false positives and gaps when this was written:
+//   - A session that started before the activation is excluded, and one of those
+//      is worth looking at on its own: it means privileged access was reached
+//      without an activation, which is either a permanent assignment somebody
+//      should not have or an activation from an earlier window.
+//   - An activation with no session is not a finding by itself. People activate
+//      and get interrupted. A pattern of activations with no sessions is worth
+//      asking about, because it suggests the activation is being taken routinely.
+//   - The join is on a name, not an immutable id, because the recording carries a
+//      Unix username and not an object id. A renamed account breaks it silently.
+//
+// If AuditLogs is not in this workspace, the activation half has to come from
+// wherever the directory's audit events land, and only the projection changes.
+let window = 7d;
+let activationValidFor = 8h;
+let activations =
+    AuditLogs
+    | where TimeGenerated > ago(window)
+    | where Category in ("RoleManagement", "GroupManagement")
+    | where ActivityDisplayName has_any (
+        "Add member to role completed (PIM activation)",
+        "Add member to group completed (PIM activation)",
+        "Add eligible member to role completed (PIM activation)"
+      )
+    | extend Initiator = parse_json(tostring(InitiatedBy)).user
+    | extend
+        ActivatedBy = tostring(Initiator.userPrincipalName),
+        ActivatedById = tostring(Initiator.id)
+    | extend ActivatedBy = iff(isempty(ActivatedBy), ActivatedById, ActivatedBy)
+    | extend ShortName = tolower(tostring(split(ActivatedBy, "@")[0]))
+    | project ActivationTime = TimeGenerated, ActivatedBy, ShortName, ActivityDisplayName, ActivationResult = tostring(Result);
+let sessions =
+    Syslog
+    | where TimeGenerated > ago(window)
+    | where ProcessName == "tlog-rec-session"
+    | extend rec = parse_json(SyslogMessage)
+    | extend RecordedUser = tostring(rec.user), SessionId = tostring(rec.session)
+    | where isnotempty(RecordedUser)
+    | summarize SessionStart = min(TimeGenerated), SessionEnd = max(TimeGenerated)
+        by Computer, RecordedUser, SessionId
+    | extend ShortName = tolower(RecordedUser);
+activations
+| join kind=inner (sessions) on ShortName
+| where SessionStart between (ActivationTime .. (ActivationTime + activationValidFor))
+| project
+    ActivationTime,
+    ActivatedBy,
+    ActivityDisplayName,
+    ActivationResult,
+    Computer,
+    RecordedUser,
+    SessionId,
+    SessionStart,
+    SessionEnd,
+    MinutesToSession = round(datetime_diff('second', SessionStart, ActivationTime) / 60.0, 1)
+| order by ActivationTime desc

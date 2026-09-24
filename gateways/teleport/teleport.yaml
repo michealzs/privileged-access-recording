@@ -1,0 +1,123 @@
+# Teleport, minimal single instance: auth, proxy, SSH and Kubernetes in one
+# process, with recording done at the proxy.
+#
+# This is the smallest configuration that records SSH sessions and Kubernetes
+# exec sessions from one host. It is not a highly available cluster: one process
+# holds the certificate authorities, the audit log and the session recordings.
+# See sso-and-tiers.md before planning around any of the single sign on options,
+# because the one most teams want is not in the free tier.
+
+version: v3
+
+teleport:
+  nodename: gateway-01
+  data_dir: /var/lib/teleport
+  # Local storage. The certificate authorities, the audit log and the session
+  # recordings all live under data_dir, so that directory is the backup target
+  # and losing it loses the trust roots as well as the evidence.
+  log:
+    output: /var/log/teleport/teleport.log
+    severity: INFO
+    format:
+      output: json
+      extra_fields:
+        - timestamp
+        - level
+        - component
+        - caller
+
+auth_service:
+  enabled: "yes"
+  cluster_name: gateway.example.com
+  listen_addr: 0.0.0.0:3025
+
+  # Everything through one port, which is what makes a single public address
+  # enough for SSH, the web UI and the Kubernetes API.
+  proxy_listener_mode: multiplex
+
+  # proxy records the session stream at the proxy, so a compromised target
+  # cannot drop its own recording and a target does not need to run a Teleport
+  # agent to be recorded. The cost is that the proxy is decrypting and
+  # re-encrypting every session, and that "enhanced" recording, which is a
+  # kernel side feature on the node, is not available in this mode.
+  #
+  # Values: node, node-sync, proxy, proxy-sync, off.
+  #   node        agent on the target writes, uploads when the session ends
+  #   proxy       proxy writes, uploads when the session ends
+  #   proxy-sync  proxy streams to the audit backend as it happens
+  #   off         no recording. There is no configuration in this repository
+  #               where this is the right answer
+  session_recording: proxy
+
+  authentication:
+    # local users with WebAuthn. An OIDC or SAML connector is the thing to
+    # change here, and it is an Enterprise feature: sso-and-tiers.md.
+    type: local
+    second_factor: webauthn
+    webauthn:
+      # Must be the public hostname exactly. A mismatch here fails every
+      # registration with an error that does not mention the hostname.
+      rp_id: gateway.example.com
+    # Refuse a login that does not present a second factor, rather than
+    # offering one.
+    require_session_mfa: true
+    locking_mode: strict
+
+  # Session and certificate lifetime. max_session_ttl on a role overrides this
+  # downwards; nothing overrides it upwards.
+  session_control_timeout: 2m
+
+  client_idle_timeout: 15m
+  disconnect_expired_cert: true
+
+proxy_service:
+  enabled: "yes"
+  web_listen_addr: 0.0.0.0:443
+  public_addr: gateway.example.com:443
+
+  # With proxy_listener_mode: multiplex, the Kubernetes and SSH listeners are on
+  # the same port as the web UI. kube_public_addr is still needed because it is
+  # what goes into the kubeconfig that tsh writes.
+  kube_public_addr: gateway.example.com:443
+
+  https_keypairs:
+    - key_file: /etc/teleport/tls/privkey.pem
+      cert_file: /etc/teleport/tls/fullchain.pem
+
+ssh_service:
+  enabled: "yes"
+  # Labels are how roles select hosts. Keep them few and mechanical; a label
+  # somebody has to remember to set is a host that quietly allows everyone.
+  labels:
+    environment: example-environment
+    tier: example-tier
+  commands:
+    - name: kernel
+      command: [uname, -r]
+      period: 1h
+
+  # Enhanced recording is eBPF on the node: process execution, file opens and
+  # network connections, as structured events next to the terminal stream. It
+  # needs the agent on the target to be doing the recording, so it does not
+  # apply with session_recording: proxy. This is here switched off and named on
+  # purpose, because it is the most common thing to expect and not get.
+  enhanced_recording:
+    enabled: false
+
+kubernetes_service:
+  enabled: "yes"
+  # Reached as one registered cluster. kubectl exec through this path IS session
+  # recorded, which is the capability the HTTP proxy approach in
+  # ../warpgate/warpgate.yaml does not have.
+  kube_cluster_name: example-kubernetes
+  labels:
+    environment: example-environment
+
+app_service:
+  enabled: "no"
+
+db_service:
+  enabled: "no"
+
+discovery_service:
+  enabled: "no"

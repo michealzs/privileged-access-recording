@@ -1,0 +1,192 @@
+# Apache Guacamole as a recording gateway.
+#
+# Three containers and one shared volume:
+#   guacd       the protocol daemon. It is the process that speaks RDP, SSH and
+#               VNC to the target and the process that writes the recordings.
+#   postgres    connection definitions, users, permissions and the session
+#               history the web app lists recordings from.
+#   guacamole   the web app. Authentication is delegated to the directory over
+#               OIDC, and it reads recordings back out of the shared volume.
+#
+# A fourth container prunes recordings older than RECORDING_RETENTION_DAYS. It
+# is the only thing in this file that deletes evidence, so read
+# prune-recordings.sh before raising the retention or pointing it elsewhere.
+#
+# Images are pinned to a patch version, not to "latest". Nothing here mounts a
+# Docker socket. Three of the four containers run with no capabilities at all;
+# postgres is the exception and the comment on that service says exactly which
+# ones it gets and why.
+
+name: guacamole-gateway
+
+x-hardening: &hardening
+  restart: unless-stopped
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  logging:
+    driver: json-file
+    options:
+      max-size: "20m"
+      max-file: "5"
+
+services:
+  guacd:
+    <<: *hardening
+    image: guacamole/guacd:1.5.5
+    container_name: guacamole-guacd
+    environment:
+      # debug logs every protocol message and is far too loud to leave on.
+      GUACD_LOG_LEVEL: ${GUACD_LOG_LEVEL:-info}
+    volumes:
+      # guacd is the writer. The web app mounts the same volume read only.
+      - recordings:/var/lib/guacamole/recordings:rw
+    networks:
+      - gateway
+    expose:
+      - "4822"
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 4822 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  postgres:
+    <<: *hardening
+    image: postgres:16.10-alpine
+    container_name: guacamole-postgres
+    # The one service that cannot run under cap_drop ALL. The official entrypoint
+    # starts as root, chowns the data directory, and then drops to the postgres
+    # user with su-exec; with no capabilities, setuid() from root to uid 70 is
+    # EPERM and the container exits before it has written anything. Since the web
+    # app waits on this container being healthy, the whole stack stays down.
+    #
+    # These five are what that sequence needs and nothing more. The alternative is
+    # user: "70:70" with a data volume already owned by 70, which moves the
+    # ownership problem to whoever creates the volume.
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETGID
+      - SETUID
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB in .env}
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      # Initialise with checksums on. It cannot be turned on later without a
+      # dump and reload.
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+    volumes:
+      - database:/var/lib/postgresql/data:rw
+      # Schema, generated once with initdb.sh. See README.md; this directory is
+      # git-ignored because the file it holds is generated, not authored.
+      - ./initdb:/docker-entrypoint-initdb.d:ro
+    networks:
+      - gateway
+    expose:
+      - "5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  guacamole:
+    <<: *hardening
+    image: guacamole/guacamole:1.5.5
+    container_name: guacamole-web
+    depends_on:
+      guacd:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      GUACD_HOSTNAME: guacd
+      GUACD_PORT: "4822"
+
+      POSTGRESQL_HOSTNAME: postgres
+      POSTGRESQL_PORT: "5432"
+      POSTGRESQL_DATABASE: ${POSTGRES_DB:?set POSTGRES_DB in .env}
+      POSTGRESQL_USER: ${POSTGRES_USER:?set POSTGRES_USER in .env}
+      POSTGRESQL_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRESQL_AUTO_CREATE_ACCOUNTS: "true"
+
+      # Directory single sign on. The extension is in the image already; setting
+      # these switches it on. EXTENSION_PRIORITY only decides which provider is
+      # tried first: the JDBC provider is still loaded and still accepts a
+      # username and a password at /api/tokens, so the database remains an
+      # authentication path as well as the authorisation store. Every local
+      # account in it therefore has to be accounted for, starting with the
+      # guacadmin account the generated schema creates. README.md deletes it
+      # during first start and has the query for finding the others.
+      EXTENSION_PRIORITY: openid
+      OPENID_AUTHORIZATION_ENDPOINT: ${OIDC_AUTHORIZATION_ENDPOINT:?set OIDC_AUTHORIZATION_ENDPOINT in .env}
+      OPENID_JWKS_ENDPOINT: ${OIDC_JWKS_ENDPOINT:?set OIDC_JWKS_ENDPOINT in .env}
+      OPENID_ISSUER: ${OIDC_ISSUER:?set OIDC_ISSUER in .env}
+      OPENID_CLIENT_ID: ${OIDC_CLIENT_ID:?set OIDC_CLIENT_ID in .env}
+      OPENID_REDIRECT_URI: ${PUBLIC_URL:?set PUBLIC_URL in .env}
+      # The claim the username is taken from. Whatever is chosen here is the
+      # identity that ends up in the recording filename and in the audit trail,
+      # so it has to be the same string the hosts see from sssd.
+      OPENID_USERNAME_CLAIM_TYPE: ${OIDC_USERNAME_CLAIM:-preferred_username}
+      OPENID_GROUPS_CLAIM_TYPE: ${OIDC_GROUPS_CLAIM:-groups}
+      OPENID_SCOPE: ${OIDC_SCOPE:-openid profile email}
+      OPENID_MAX_TOKEN_VALIDITY: "300"
+      OPENID_ALLOWED_CLOCK_SKEW: "30"
+
+      # Switches on the bundled history recording storage extension, which is
+      # what puts a play button next to each row in the session history table.
+      # Without it the files are written and nothing in the UI can find them.
+      RECORDING_SEARCH_PATH: /var/lib/guacamole/recordings
+
+      # The web app sits behind a reverse proxy that terminates TLS.
+      REMOTE_IP_VALVE_ENABLED: "true"
+      PROXY_ALLOWED_IPS_REGEX: ${PROXY_ALLOWED_IPS_REGEX:-127\.0\.0\.1|::1}
+    volumes:
+      - recordings:/var/lib/guacamole/recordings:ro
+    networks:
+      - gateway
+    ports:
+      # Bound to loopback. TLS and the public name belong to the proxy in front.
+      - "127.0.0.1:8080:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/guacamole/ >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
+
+  recording-pruner:
+    <<: *hardening
+    image: alpine:3.21.4
+    container_name: guacamole-recording-pruner
+    # Runs as the same uid guacd writes as, so it can delete what guacd wrote
+    # and nothing else.
+    user: "1000:1000"
+    entrypoint: ["/bin/sh", "/usr/local/bin/prune-recordings.sh"]
+    environment:
+      RECORDING_PATH: /var/lib/guacamole/recordings
+      RECORDING_RETENTION_DAYS: ${RECORDING_RETENTION_DAYS:-90}
+      PRUNE_INTERVAL_SECONDS: ${PRUNE_INTERVAL_SECONDS:-86400}
+      # Set to 1 to log what would be deleted and delete nothing. Leave it at 1
+      # for the first retention period.
+      PRUNE_DRY_RUN: ${PRUNE_DRY_RUN:-1}
+    volumes:
+      - recordings:/var/lib/guacamole/recordings:rw
+      - ./prune-recordings.sh:/usr/local/bin/prune-recordings.sh:ro
+    networks:
+      - gateway
+
+networks:
+  gateway:
+    driver: bridge
+
+volumes:
+  # Recordings are evidence. Back this volume up somewhere the gateway
+  # administrators cannot delete from, and see docs/threat-model.md for why.
+  recordings:
+  database:

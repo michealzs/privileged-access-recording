@@ -1,0 +1,88 @@
+## {{ ansible_managed }}
+##
+## Loaded by augenrules, which concatenates /etc/audit/rules.d in name order.
+## The distribution's 10-base-config.rules has already issued -D and set the
+## buffer size, so this file must not repeat either.
+##
+## Every rule carries a key. The key is what the queries in pipeline/queries
+## select on, so renaming one here breaks a query there.
+##
+## Volume per rule is in host-baseline/docs/audit-volume.md. Read it before
+## deciding retention, because one of these rules is an order of magnitude
+## louder than the rest.
+
+{% if auditd_log_execve %}
+## execve by real users. auid is the login uid, which survives su and sudo, so
+## this attributes a command to the person who logged in and not to the account
+## they became. auid!=unset excludes daemons started at boot, which have no
+## login uid.
+##
+## This is the loudest rule in the file. It is also the one that answers "what
+## did they run", and on a host reached only through a recorded gateway the
+## volume is bounded by how much humans type.
+-a always,exit -F arch=b64 -S execve -F auid>={{ auditd_uid_min }} -F auid!=unset -F key=execve
+-a always,exit -F arch=b32 -S execve -F auid>={{ auditd_uid_min }} -F auid!=unset -F key=execve
+{% endif %}
+
+## Identity files. A change to any of these changes who exists on this host,
+## which on a directory joined host should be close to never.
+{% for path in auditd_watch_identity %}
+-w {{ path }} -p wa -k identity
+{% endfor %}
+
+## sudoers. A change here changes what the admin groups may do, and it is the
+## quietest way to give yourself more access than the directory granted.
+{% for path in auditd_watch_sudoers %}
+-w {{ path }} -p wa -k sudoers
+{% endfor %}
+
+## The recording configuration. Turning recording off is a file change, and it
+## is the event this whole design exists to notice. Note the ordering problem
+## this rule cannot solve: an attacker who edits these files and then stops
+## auditd has still generated this event, but one who stops auditd first has
+## not. That is what the remote forward is for.
+{% for path in auditd_watch_recording_config %}
+-w {{ path }} -p wa -k recording-config
+{% endfor %}
+
+## The audit configuration itself, on its own key so "somebody edited the
+## auditing" is one query.
+{% for path in auditd_watch_audit_config %}
+-w {{ path }} -p wa -k audit-config
+{% endfor %}
+
+## Login records.
+{% for path in auditd_watch_logins %}
+-w {{ path }} -p wa -k logins
+{% endfor %}
+
+## Privileged commands, individually. These are all covered by the execve rule
+## above as well; having them on their own key means "who used sudo this week"
+## is a cheap query and does not require reading every command on the host.
+{% for path in auditd_privileged_commands %}
+-a always,exit -F path={{ path }} -F perm=x -F auid>={{ auditd_uid_min }} -F auid!=unset -k privileged
+{% endfor %}
+
+{% if auditd_log_kernel_modules %}
+## Kernel module loading. Low volume and high value: on a steady state host this
+## should be silent outside a kernel upgrade.
+-a always,exit -F arch=b64 -S init_module,finit_module,delete_module -F auid!=unset -k modules
+-a always,exit -F arch=b32 -S init_module,delete_module -F auid!=unset -k modules
+-w /usr/sbin/insmod -p x -k modules
+-w /usr/sbin/rmmod -p x -k modules
+-w /usr/sbin/modprobe -p x -k modules
+{% endif %}
+{% if auditd_extra_rules | length > 0 %}
+
+## Host specific rules, from auditd_extra_rules.
+{% for rule in auditd_extra_rules %}
+{{ rule }}
+{% endfor %}
+{% endif %}
+{% if auditd_immutable %}
+
+## -e 2 makes the loaded rule set immutable until the next reboot. Nothing,
+## including root, can add or remove a rule afterwards. It must be the last line
+## loaded, so nothing may sort after this file.
+-e 2
+{% endif %}

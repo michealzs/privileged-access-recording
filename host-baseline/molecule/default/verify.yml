@@ -1,0 +1,214 @@
+---
+- name: Verify
+  hosts: all
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Read sssd.conf
+      ansible.builtin.slurp:
+        src: /etc/sssd/sssd.conf
+      register: verify_sssd_conf
+
+    - name: Stat sssd.conf
+      ansible.builtin.stat:
+        path: /etc/sssd/sssd.conf
+      register: verify_sssd_conf_stat
+
+    - name: Assert login is restricted to the allowed groups and the file is not readable
+      ansible.builtin.assert:
+        that:
+          - "'access_provider = simple' in (verify_sssd_conf.content | b64decode)"
+          - "'simple_allow_groups = example-linux-operators, example-linux-admins' in (verify_sssd_conf.content | b64decode)"
+          - "'use_fully_qualified_names = false' in (verify_sssd_conf.content | b64decode)"
+          - "'enumerate = false' in (verify_sssd_conf.content | b64decode)"
+          - verify_sssd_conf_stat.stat.mode == "0600"
+        quiet: true
+
+    - name: Validate the sudoers drop-in
+      ansible.builtin.command:
+        cmd: /usr/sbin/visudo -cf /etc/sudoers.d/60-directory-admins
+      changed_when: false
+
+    - name: Read the sssd session recording snippet
+      ansible.builtin.slurp:
+        src: /etc/sssd/conf.d/01-session-recording.conf
+      register: verify_session_recording
+
+    - name: Assert recording is limited to the privileged group and excludes the service account
+      ansible.builtin.assert:
+        that:
+          - "'scope = some' in (verify_session_recording.content | b64decode)"
+          - "'groups = example-linux-admins' in (verify_session_recording.content | b64decode)"
+          - "'exclude_users = example-svc-backup' in (verify_session_recording.content | b64decode)"
+        quiet: true
+
+    - name: Read the tlog session configuration
+      ansible.builtin.slurp:
+        src: /etc/tlog/tlog-rec-session.conf
+      register: verify_tlog_conf
+
+    - name: Assert the tlog configuration is valid JSON with input capture off
+      ansible.builtin.assert:
+        that:
+          - (verify_tlog_conf.content | b64decode | from_json).log.input == false
+          - (verify_tlog_conf.content | b64decode | from_json).log.output
+          - (verify_tlog_conf.content | b64decode | from_json).log.window
+          - (verify_tlog_conf.content | b64decode | from_json).writer == "journal"
+          - (verify_tlog_conf.content | b64decode | from_json).limit.action == "delay"
+          - (verify_tlog_conf.content | b64decode | from_json).shell == "/bin/bash"
+        fail_msg: >-
+          The tlog configuration is either not valid JSON or records keystrokes.
+          log.input true means passwords typed at an echoing prompt are captured.
+        quiet: true
+
+    - name: Read the journald drop-in
+      ansible.builtin.slurp:
+        src: /etc/systemd/journald.conf.d/10-session-recording.conf
+      register: verify_journald
+
+    - name: Assert journald rate limiting cannot discard a recorded session
+      ansible.builtin.assert:
+        that:
+          - "'RateLimitIntervalSec=0' in (verify_journald.content | b64decode)"
+          - "'RateLimitBurst=0' in (verify_journald.content | b64decode)"
+        quiet: true
+
+    - name: Read the rsyslog forward
+      ansible.builtin.slurp:
+        src: /etc/rsyslog.d/40-tlog-remote.conf
+      register: verify_rsyslog
+
+    - name: Assert the forward is queued to disk and using TLS
+      ansible.builtin.assert:
+        that:
+          - "'queue.filename=\"tlog_forward\"' in (verify_rsyslog.content | b64decode)"
+          - "'queue.saveOnShutdown=\"on\"' in (verify_rsyslog.content | b64decode)"
+          - "'StreamDriver=\"gtls\"' in (verify_rsyslog.content | b64decode)"
+          - "'StreamDriverAuthMode=\"x509/name\"' in (verify_rsyslog.content | b64decode)"
+          - "'$programname == \"tlog-rec-session\"' in (verify_rsyslog.content | b64decode)"
+          - "'$programname == \"audisp-syslog\"' in (verify_rsyslog.content | b64decode)"
+        fail_msg: >-
+          The forward is missing the disk assisted queue, TLS, or one of the
+          programs it has to match. Without the audisp match the recordings leave
+          the host and the audit trail does not.
+        quiet: true
+
+    - name: Read the main rsyslog configuration
+      ansible.builtin.slurp:
+        src: /etc/rsyslog.conf
+      register: verify_rsyslog_main
+
+    - name: Assert imjournal rate limiting is off where imjournal is loaded, and only there
+      ansible.builtin.assert:
+        that:
+          # Either the main configuration loads imjournal and carries the
+          # override, or it does not load it at all and the drop-in does.
+          - >-
+            ('module(load="imjournal" Ratelimit.Interval="0" Ratelimit.Burst="0"'
+            in (verify_rsyslog_main.content | b64decode))
+            or (('load="imjournal"' not in (verify_rsyslog_main.content | b64decode))
+            and ('Ratelimit.Interval="0"' in (verify_rsyslog.content | b64decode)))
+          # Never both, which is the repeat load the override silently dies on.
+          - >-
+            not (('load="imjournal"' in (verify_rsyslog_main.content | b64decode))
+            and ('load="imjournal"' in (verify_rsyslog.content | b64decode)))
+        fail_msg: >-
+          The rate limit override has to be applied to the imjournal load in
+          /etc/rsyslog.conf. A second module(load="imjournal") in the drop-in is a
+          repeat load of an already loaded input module, and rsyslog does not
+          re-apply module parameters on a repeat load, so the override renders
+          into a file and never reaches the running input.
+        quiet: true
+
+    - name: Assert the drop-in does not move the rsyslog work directory
+      ansible.builtin.assert:
+        that:
+          - "'workDirectory' not in (verify_rsyslog.content | b64decode)"
+        fail_msg: >-
+          A global(workDirectory=...) in a drop-in moves imjournal's state file
+          with it, which loses the journal cursor. The queue names its own spool
+          directory instead.
+        quiet: true
+
+    - name: Read the audit rules
+      ansible.builtin.slurp:
+        src: /etc/audit/rules.d/50-privileged-access.rules
+      register: verify_audit_rules
+
+    - name: Assert every documented audit key is present
+      ansible.builtin.assert:
+        that:
+          - "'-F key=execve' in (verify_audit_rules.content | b64decode)"
+          - "'-w /etc/passwd -p wa -k identity' in (verify_audit_rules.content | b64decode)"
+          - "'-w /etc/sudoers.d/ -p wa -k sudoers' in (verify_audit_rules.content | b64decode)"
+          - "'-w /etc/tlog/ -p wa -k recording-config' in (verify_audit_rules.content | b64decode)"
+          - "'-w /etc/audit/ -p wa -k audit-config' in (verify_audit_rules.content | b64decode)"
+          - "'-k privileged' in (verify_audit_rules.content | b64decode)"
+          - "'-k modules' in (verify_audit_rules.content | b64decode)"
+          - "'-F auid!=unset' in (verify_audit_rules.content | b64decode)"
+        fail_msg: >-
+          An audit key named in roles/auditd/README.md and selected on by the
+          queries in pipeline/queries is missing from the rendered rules.
+        quiet: true
+
+    - name: Assert the rule file did not keep the -D from the base configuration
+      ansible.builtin.assert:
+        that:
+          - "'-D' not in (verify_audit_rules.content | b64decode).split('\n') | map('trim') | list"
+        fail_msg: >-
+          A bare -D in this file would delete every rule the distribution's
+          base configuration loaded before it.
+        quiet: true
+
+    - name: Read the auditd configuration
+      ansible.builtin.slurp:
+        src: /etc/audit/auditd.conf
+      register: verify_auditd_conf
+
+    - name: Assert the audit log is enriched and rotation is bounded
+      ansible.builtin.assert:
+        that:
+          - "'log_format = ENRICHED' in (verify_auditd_conf.content | b64decode)"
+          - "'max_log_file_action = ROTATE' in (verify_auditd_conf.content | b64decode)"
+          - "'name_format = HOSTNAME' in (verify_auditd_conf.content | b64decode)"
+        quiet: true
+
+    - name: Read the audisp syslog plugin configuration
+      ansible.builtin.slurp:
+        src: /etc/audit/plugins.d/syslog.conf
+      register: verify_audisp_syslog
+
+    - name: Assert audit events are dispatched to syslog on the collected facility
+      ansible.builtin.assert:
+        that:
+          - "'active = yes' in (verify_audisp_syslog.content | b64decode)"
+          - "'args = LOG_LOCAL6 LOG_INFO' in (verify_audisp_syslog.content | b64decode)"
+        fail_msg: >-
+          Either the plugin is not active, or the args line does not name a
+          facility. With no facility named, audisp-syslog never calls openlog()
+          and every event arrives on the default facility of user, which is not
+          the facility the data collection rule in pipeline/ collects and not the
+          one the queries were written against.
+        quiet: true
+
+    - name: Read the PAM stacks the module was added to
+      ansible.builtin.slurp:
+        src: "/etc/pam.d/{{ item }}"
+      register: verify_pam
+      loop:
+        - su
+        - sudo
+
+    - name: Assert TTY auditing is off by default, on for the named accounts and not capturing passwords
+      ansible.builtin.assert:
+        that:
+          - "'pam_tty_audit.so disable=* enable=root,example.admin' in (item.content | b64decode)"
+          - "'log_passwd' not in (item.content | b64decode)"
+        fail_msg: >-
+          Either the managed block is missing from this PAM stack, or it carries
+          log_passwd, which records passwords typed at a prompt into the audit
+          log.
+        quiet: true
+      loop: "{{ verify_pam.results }}"
+      loop_control:
+        label: "{{ item.item }}"

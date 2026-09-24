@@ -1,0 +1,68 @@
+---
+- name: Refuse to capture passwords without an explicit acknowledgement
+  ansible.builtin.assert:
+    that:
+      - not (pam_tty_audit_log_passwd | bool) or (pam_tty_audit_allow_log_passwd | bool)
+    fail_msg: >-
+      pam_tty_audit_log_passwd is true but pam_tty_audit_allow_log_passwd is
+      false. log_passwd records passwords typed at a prompt into the audit log,
+      which makes the audit log and every backup of it secret material. Set both
+      variables, in the inventory, with a comment saying who decided it.
+    quiet: true
+
+- name: Fail when nothing is enabled and nothing is disabled
+  ansible.builtin.assert:
+    that:
+      - (pam_tty_audit_enable_patterns | length) > 0
+    fail_msg: >-
+      pam_tty_audit_enable_patterns is empty, which adds the module and captures
+      nobody. Set pam_tty_audit_enabled to false if that is what is intended.
+    quiet: true
+  when: pam_tty_audit_enabled | bool
+
+- name: Install the audit tooling that stores and reads TTY captures
+  ansible.builtin.dnf:
+    name: "{{ pam_tty_audit_packages }}"
+    state: present
+
+- name: Look for the pam_tty_audit module
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop: "{{ pam_tty_audit_module_paths }}"
+  register: pam_tty_audit_module_stat
+  when: pam_tty_audit_enabled | bool
+
+- name: Fail when the module is not installed
+  ansible.builtin.assert:
+    that:
+      - pam_tty_audit_module_stat.results | selectattr('stat.exists') | list | length > 0
+    fail_msg: >-
+      pam_tty_audit.so was not found in any of pam_tty_audit_module_paths. A
+      "required" PAM line referencing a module that is not there fails every
+      session in that stack, so the role stops here rather than writing it.
+    quiet: true
+  when: pam_tty_audit_enabled | bool
+
+- name: Check which PAM service files exist
+  ansible.builtin.stat:
+    path: "{{ pam_tty_audit_pam_directory }}/{{ item }}"
+  loop: "{{ pam_tty_audit_services }}"
+  register: pam_tty_audit_service_stat
+
+- name: Add TTY auditing to the PAM stacks
+  ansible.builtin.blockinfile:
+    path: "{{ item.stat.path }}"
+    # A named marker, so the block can be found, changed and removed without
+    # touching anything the distribution put in the file.
+    marker: "# {mark} ANSIBLE MANAGED BLOCK pam_tty_audit"
+    block: |
+      session required pam_tty_audit.so {{ pam_tty_audit_arguments }}
+    insertafter: EOF
+    create: false
+    owner: root
+    group: root
+    mode: "0644"
+    state: "{{ 'present' if pam_tty_audit_enabled | bool else 'absent' }}"
+  loop: "{{ pam_tty_audit_service_stat.results | selectattr('stat.exists') | list }}"
+  loop_control:
+    label: "{{ item.stat.path }}"
