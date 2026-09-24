@@ -1,7 +1,11 @@
 ---
 - name: Prepare
   hosts: all
-  become: true
+  # The geerlingguy images connect as root, so become would shell out to sudo
+  # for no reason, and sudo's PAM stack cannot do account management inside
+  # these containers ("Authentication service cannot retrieve authentication
+  # info"). site.yml keeps become: true, which is where it matters.
+  become: false
   # Facts are required, not optional. The dnf action plugin picks its backend
   # from ansible_facts.pkg_mgr, so with gather_facts off it cannot tell dnf4
   # from dnf5 and fails with "Could not detect which major revision of dnf is

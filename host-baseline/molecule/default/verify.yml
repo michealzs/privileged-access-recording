@@ -1,7 +1,11 @@
 ---
 - name: Verify
   hosts: all
-  become: true
+  # The geerlingguy images connect as root, so become would shell out to sudo
+  # for no reason, and sudo's PAM stack cannot do account management inside
+  # these containers ("Authentication service cannot retrieve authentication
+  # info"). site.yml keeps become: true, which is where it matters.
+  become: false
   gather_facts: false
   tasks:
     - name: Read sssd.conf
