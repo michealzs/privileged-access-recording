@@ -2,7 +2,11 @@
 - name: Prepare
   hosts: all
   become: true
-  gather_facts: false
+  # Facts are required, not optional. The dnf action plugin picks its backend
+  # from ansible_facts.pkg_mgr, so with gather_facts off it cannot tell dnf4
+  # from dnf5 and fails with "Could not detect which major revision of dnf is
+  # in use" before installing anything.
+  gather_facts: true
   tasks:
     # The images ship a minimal package set. These are pulled in by the roles
     # themselves on a real host, and installing them here keeps a dependency
